@@ -1,0 +1,8 @@
+[Unit]
+Description=Trade bot auto-update from GitHub
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/Trade
+ExecStart=/bin/bash /root/Trade/autoupdate.sh

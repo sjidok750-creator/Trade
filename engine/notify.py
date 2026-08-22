@@ -2,8 +2,9 @@
 
 환경변수: TG_BOT_TOKEN (필수), TG_CHAT_ID (없으면 자동 조회)
 
-단독 실행 시 챗 ID를 자동으로 찾아 테스트 메시지를 보낸다:
-    python -m engine.notify
+단독 실행:
+    python -m engine.notify              # 챗 ID 자동 조회 + 연결 테스트
+    python -m engine.notify "메시지"      # 메시지 즉시 발송 (스크립트용)
 """
 import os
 import sys
@@ -64,4 +65,7 @@ def _setup():
 
 
 if __name__ == "__main__":
-    sys.exit(_setup())
+    if len(sys.argv) > 1:          # 인자가 있으면 그 메시지를 즉시 발송 (스크립트용)
+        send(" ".join(sys.argv[1:]))
+    else:
+        sys.exit(_setup())

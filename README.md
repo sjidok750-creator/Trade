@@ -86,6 +86,26 @@ journalctl -u trade -f      # 실시간 로그 (Ctrl+C로 빠져나옴)
 systemctl stop trade        # 정지
 ```
 
+### 자동 업데이트 (선택)
+
+GitHub에 새 커밋이 올라오면 서버가 스스로 받아 적용한다. 10분마다 확인하며,
+**테스트 17건을 통과해야만** 반영하고 실패하면 이전 버전으로 되돌린 뒤 알린다.
+
+```bash
+cp ~/Trade/autoupdate.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now autoupdate.timer
+```
+
+```bash
+systemctl list-timers autoupdate.timer   # 다음 실행 시각
+journalctl -u autoupdate -n 20           # 업데이트 이력
+systemctl disable --now autoupdate.timer # 자동 업데이트 중지
+```
+
+실전 모드(`dry_run: false`)에서는 `config.yaml`(전략·리스크 한도) 변경이 포함된
+업데이트를 자동 적용하지 않고 보류 알림만 보낸다 — 돈이 걸린 설정은 사람이 승인한다.
+
 ## 안전 장치 요약
 
 | 장치 | 값 | 위치 |

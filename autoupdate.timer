@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for trade bot updates every 10 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Unit=autoupdate.service
+
+[Install]
+WantedBy=timers.target
