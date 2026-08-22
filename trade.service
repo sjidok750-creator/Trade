@@ -1,0 +1,17 @@
+[Unit]
+Description=Bithumb auto trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Trade
+EnvironmentFile=/root/Trade/.env
+ExecStart=/root/Trade/.venv/bin/python -m engine.runner
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

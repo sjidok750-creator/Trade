@@ -71,26 +71,19 @@ cd ~/Trade && set -a && . ./.env && set +a
 
 ### systemd 상시 실행 (VPS)
 
-```ini
-# /etc/systemd/system/trade.service
-[Unit]
-Description=Bithumb auto trader
-After=network-online.target
+`trade.service`가 레포에 포함되어 있다. 접속이 끊겨도 계속 돌고, 서버가
+재부팅돼도 자동으로 다시 뜬다.
 
-[Service]
-WorkingDirectory=/home/ubuntu/Trade
-EnvironmentFile=/home/ubuntu/Trade/.env
-ExecStart=/home/ubuntu/Trade/.venv/bin/python -m engine.runner
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+```bash
+cp ~/Trade/trade.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now trade
 ```
 
 ```bash
-sudo systemctl enable --now trade
-journalctl -u trade -f          # 로그 확인
+systemctl status trade      # 상태 확인
+journalctl -u trade -f      # 실시간 로그 (Ctrl+C로 빠져나옴)
+systemctl stop trade        # 정지
 ```
 
 ## 안전 장치 요약
