@@ -1,10 +1,13 @@
 """전략 연구실 — 후보 전략들을 동일 조건에서 비교한다.
 
-실행: .venv/bin/python -m backtest.lab
+실행: .venv/bin/python -m backtest.lab          # 후보 비교
+      .venv/bin/python -m backtest.lab robust   # MA추세 강건성 스윕
 
 전부 저빈도(월 단위 리밸런싱) 전략이다. 첫 백테스트에서 고빈도 매매가
 비용으로만 -60%를 낸 것이 확인됐으므로, 회전율을 낮추는 것이 1원칙이다.
 """
+import sys
+
 import yaml
 
 from .data import load_csv
@@ -35,6 +38,38 @@ def series(closes, m, dates):
     return out
 
 
+def ma_trend_factory(markets, px, ma_len, band=0.0, rebal=REBAL):
+    """이평선 추세추종 생성기.
+
+    band: 휩쏘 방지 이력대 — 가격이 MA*(1+band) 위로 가야 진입,
+          MA*(1-band) 아래로 내려와야 이탈. 그 사이에서는 직전 상태 유지.
+    """
+    n = len(markets)
+    state = {m: False for m in markets}
+    last_j = -1
+
+    def fn(i):
+        nonlocal last_j
+        j = (i - 1) - ((i - 1) % rebal)
+        if j < ma_len:
+            return {}
+        if j != last_j:
+            last_j = j
+            for m in markets:
+                window = px[m][j - ma_len:j]
+                if None in window or px[m][j] is None:
+                    state[m] = False
+                    continue
+                ma = sum(window) / ma_len
+                if px[m][j] > ma * (1 + band):
+                    state[m] = True
+                elif px[m][j] < ma * (1 - band):
+                    state[m] = False
+        return {m: 1.0 / n for m in markets if state[m]}
+
+    return fn
+
+
 def make_strategies(markets, dates, closes):
     px = {m: series(closes, m, dates) for m in markets}
     n = len(markets)
@@ -45,20 +80,7 @@ def make_strategies(markets, dates, closes):
     def btc_only(i):
         return {"KRW-BTC": 1.0}
 
-    def ma_trend(i):
-        """가격이 20일 MA 위인 코인만 균등 보유, 나머지는 현금 (주 1회 판단)"""
-        j = (i - 1) - ((i - 1) % REBAL)          # 최근 리밸런싱 시점
-        j = max(j, MA_LONG)
-        if i - 1 < MA_LONG:
-            return {}
-        held = []
-        for m in markets:
-            window = px[m][j - MA_LONG:j]
-            if None in window or px[m][j] is None:
-                continue
-            if px[m][j] > sum(window) / MA_LONG:
-                held.append(m)
-        return {m: 1.0 / n for m in held}        # 균등 슬롯, 빈 슬롯은 현금
+    ma_trend = ma_trend_factory(markets, px, MA_LONG)
 
     def momentum(i):
         """90일 수익률 상위 2개 보유. 단 그 수익률이 +일 때만 (절대 모멘텀 겸용)"""
@@ -89,19 +111,38 @@ def make_strategies(markets, dates, closes):
     ]
 
 
+ROW = ("{name:>14} | {r.total_return_pct:+7.1f}% | {r.cagr_pct:+6.1f}% | "
+       "{r.mdd_pct:5.1f}% | {r.sharpe:5.2f} | {r.turnover:5.1f}x | "
+       "{r.cost_paid_pct:5.1f}% | {r.days_in_market_pct:4.0f}%")
+
+
+def robust(markets, dates, closes):
+    """MA 기간 × 밴드 × 주기 스윕 — 20일이 우연인지 확인한다."""
+    px = {m: series(closes, m, dates) for m in markets}
+    print("MA추세 강건성 스윕 (모든 칸이 고르게 좋아야 신뢰 가능)\n")
+    for rebal in (7, 3):
+        for band in (0.0, 0.01, 0.03):
+            print(f"-- 리밸 {rebal}일 / 밴드 {band*100:.0f}% --")
+            for ma in (10, 20, 30, 50, 100):
+                fn = ma_trend_factory(markets, px, ma, band, rebal)
+                r = run(f"MA{ma}", dates, closes, fn)
+                print(ROW.format(name=r.name, r=r))
+            print()
+
+
 def main():
     with open("config.yaml") as f:
         markets = yaml.safe_load(f)["universe"]
     dates, closes = load_all(markets)
     print(f"기간: {dates[0]} ~ {dates[-1]} ({len(dates)}일)\n")
+    if len(sys.argv) > 1 and sys.argv[1] == "robust":
+        return robust(markets, dates, closes)
     header = f"{'전략':>14} | {'총수익':>8} | {'연복리':>7} | {'MDD':>6} | {'샤프':>5} | {'회전':>6} | {'비용':>6} | {'투자일':>5}"
     print(header)
     print("-" * len(header))
     for name, fn in make_strategies(markets, dates, closes):
         r = run(name, dates, closes, fn)
-        print(f"{r.name:>14} | {r.total_return_pct:+7.1f}% | {r.cagr_pct:+6.1f}% | "
-              f"{r.mdd_pct:5.1f}% | {r.sharpe:5.2f} | {r.turnover:5.1f}x | "
-              f"{r.cost_paid_pct:5.1f}% | {r.days_in_market_pct:4.0f}%")
+        print(ROW.format(name=r.name, r=r))
 
 
 if __name__ == "__main__":
