@@ -15,7 +15,7 @@ import yaml
 from exchange.bithumb import Bithumb, BithumbError
 from strategies import ma_trend
 from strategies.volatility_breakout import compute_signal
-from . import fee_guard, notify
+from . import fee_guard, notify, report
 from .risk import RiskManager
 from .tradelog import TradeLog
 
@@ -42,6 +42,7 @@ class Engine:
         self.signals = {}
         self.trade_day = ""
         self.price_history = {}  # market -> [(ts, price)] 급변동 가드용
+        self.last_report = self._load_json("state/report.json", {}).get("slot", "")
 
     # ---------- 상태 저장 ----------
     @staticmethod
@@ -203,6 +204,20 @@ class Engine:
         for market in list(self.positions):
             self.sell(market, prices.get(market), reason=reason)
 
+    def maybe_report(self, equity: float, prices: dict[str, float]):
+        """한국시간 지정 시각마다 현황 리포트를 텔레그램으로 보낸다."""
+        slot = report.due(self.last_report)
+        if not slot:
+            return
+        mode = "페이퍼" if self.dry_run else "실전"
+        trend = self._load_json("state/trend.json", {})
+        msg = report.build(mode, equity, PAPER_START_KRW, self.krw_balance(),
+                           self.positions, prices, trend, self.cfg["universe"])
+        notify.send(msg, self.tg)
+        self.log.event("report", slot=slot, equity=equity)
+        self.last_report = slot
+        self._save_json("state/report.json", {"slot": slot})
+
     # ---------- 메인 루프 ----------
     def tick(self):
         markets = self.cfg["universe"]
@@ -221,6 +236,8 @@ class Engine:
         if guard == "daily_loss_limit":
             self.log.event("daily_loss_limit", equity=eq)
             notify.send(f"⚠️ 일일 손실 한도 도달, 당일 매수 중단. 총자산 {eq:,.0f}원", self.tg)
+
+        self.maybe_report(eq, prices)
 
         stop_requested = os.path.exists("STOP")
 

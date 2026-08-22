@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import unittest
 
-from engine import fee_guard
+from engine import fee_guard, report
 from engine.risk import RiskManager
 from strategies.ma_trend import update_state
 from strategies.volatility_breakout import compute_signal
@@ -151,6 +151,36 @@ class TestMaTrend(unittest.TestCase):
 
     def test_insufficient_keeps_prev(self):
         self.assertTrue(update_state(self._candles([100, 100]), 5, 0.03, prev=True))
+
+
+class TestReport(unittest.TestCase):
+    def test_due_only_on_report_hours(self):
+        from datetime import datetime
+        at = lambda h: datetime(2026, 8, 23, h, 30, tzinfo=report.KST)
+        self.assertEqual(report.due("", at(8)), "2026-08-23-08")
+        self.assertIsNone(report.due("", at(9)))          # 리포트 시각 아님
+        self.assertIsNone(report.due("", at(23)))         # 22시 이후 조용
+        # 같은 슬롯은 한 번만
+        self.assertIsNone(report.due("2026-08-23-10", at(10)))
+        self.assertEqual(report.due("2026-08-23-10", at(12)), "2026-08-23-12")
+
+    def test_build_message(self):
+        msg = report.build(
+            "페이퍼", 1_050_000, 1_000_000, 200_000,
+            {"KRW-ETH": {"volume": 1.0, "entry_price": 100.0, "krw_spent": 100.0}},
+            {"KRW-ETH": 120.0},
+            {"KRW-ETH": True, "KRW-BTC": False},
+            ["KRW-BTC", "KRW-ETH"])
+        self.assertIn("페이퍼", msg)
+        self.assertIn("+5.00%", msg)      # 총자산 손익률
+        self.assertIn("ETH", msg)
+        self.assertIn("+20.0%", msg)      # 개별 포지션 손익률
+        self.assertIn("BTC", msg)         # 추세 아래 대기 목록
+
+    def test_build_no_positions(self):
+        msg = report.build("실전", 900_000, 1_000_000, 900_000, {}, {}, {}, ["KRW-BTC"])
+        self.assertIn("보유 없음", msg)
+        self.assertIn("-10.00%", msg)
 
 
 class TestEngineTrend(unittest.TestCase):
