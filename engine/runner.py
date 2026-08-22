@@ -14,7 +14,7 @@ import yaml
 
 from exchange.bithumb import Bithumb, BithumbError
 from strategies.volatility_breakout import compute_signal
-from . import notify
+from . import fee_guard, notify
 from .risk import RiskManager
 from .tradelog import TradeLog
 
@@ -98,6 +98,10 @@ class Engine:
         # 3) 리스크 리셋
         self.risk.new_day(day, self.equity(prices))
         self.trade_day = day
+        warn = fee_guard.expiry_warning(self.cfg.get("fee", {}).get("coupon_renewed_on"))
+        if warn:
+            self.log.event("fee_coupon", message=warn)
+            notify.send(warn, self.tg)
         self.log.event("signals", day=day, targets={
             m: {"target": s.target_price, "trend_ok": s.trend_ok}
             for m, s in self.signals.items()})
@@ -121,7 +125,11 @@ class Engine:
         if self.dry_run:
             self.paper["krw"] -= krw_amount
         else:
-            self.ex.buy_market(market, krw_amount)
+            order = self.ex.buy_market(market, krw_amount)
+            anomaly = fee_guard.fee_anomaly(order)
+            if anomaly:
+                self.log.event("fee_anomaly", market=market, message=anomaly)
+                notify.send(anomaly, self.tg)
         self.positions[market] = {"volume": volume, "entry_price": price,
                                   "krw_spent": krw_amount}
         self.risk.record_buy()

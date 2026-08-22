@@ -30,5 +30,8 @@ risk:
   min_order_krw: 5500      # 최소 주문 금액 여유분 (실제 한도는 API로 재확인)
   max_daily_buys: 6        # 당일 신규 매수 총 횟수 상한
 
+fee:
+  coupon_renewed_on: "2026-08-22"   # 빗썸 0.04% 쿠폰 신청일 (30일마다 재신청 후 이 날짜 갱신)
+
 notify:
-  telegram: false          # true 설정 + TG_BOT_TOKEN/TG_CHAT_ID 환경변수 필요
+  telegram: true          # true 설정 + TG_BOT_TOKEN/TG_CHAT_ID 환경변수 필요

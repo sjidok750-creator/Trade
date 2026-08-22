@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import unittest
 
+from engine import fee_guard
 from engine.risk import RiskManager
 from strategies.volatility_breakout import compute_signal
 
@@ -106,6 +107,29 @@ class TestBacktester(unittest.TestCase):
             shutil.rmtree(tmp)
 
 
+class TestFeeGuard(unittest.TestCase):
+    def test_expiry_states(self):
+        from datetime import date, timedelta
+        fresh = (date.today() - timedelta(days=1)).isoformat()
+        soon = (date.today() - timedelta(days=28)).isoformat()
+        gone = (date.today() - timedelta(days=35)).isoformat()
+        self.assertIsNone(fee_guard.expiry_warning(fresh))
+        self.assertIn("뒤 만료", fee_guard.expiry_warning(soon))
+        self.assertIn("만료됐습니다", fee_guard.expiry_warning(gone))
+        self.assertIsNone(fee_guard.expiry_warning(None))
+        self.assertIsNone(fee_guard.expiry_warning("엉터리"))
+
+    def test_fee_anomaly(self):
+        # 0.04%: 정상
+        ok = {"paid_fee": "40", "executed_volume": "1", "price": "100000"}
+        self.assertIsNone(fee_guard.fee_anomaly(ok))
+        # 0.25%: 쿠폰 만료
+        bad = {"paid_fee": "250", "executed_volume": "1", "price": "100000"}
+        self.assertIn("재신청", fee_guard.fee_anomaly(bad))
+        # 계산 불가한 응답은 조용히 무시
+        self.assertIsNone(fee_guard.fee_anomaly({}))
+
+
 class TestEnginePaper(unittest.TestCase):
     """가짜 거래소로 엔진의 매수→손절 흐름을 검증."""
 
@@ -118,6 +142,7 @@ class TestEnginePaper(unittest.TestCase):
             "strategy": {"name": "volatility_breakout", "k": 0.5,
                          "reset_hour_kst": 0, "per_coin_k": {}, "trend_filter_ma": 0},
             "risk": RISK_CFG,
+            "fee": {"coupon_renewed_on": None},
             "notify": {"telegram": False},
         }
         with open("config.yaml", "w") as f:

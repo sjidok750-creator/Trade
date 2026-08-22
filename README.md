@@ -15,20 +15,40 @@ config.yaml  전략·리스크 설정 — Claude 튜닝 루프가 이 파일을 
 
 ## 설치 (VPS)
 
-```bash
-git clone <repo> && cd Trade
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m tests.test_all        # 전부 OK 확인
-```
-
-API 키는 환경변수로만 주입한다 (절대 파일로 커밋 금지):
+Vultr 콘솔의 **View Console** 버튼(웹 터미널) 또는 SSH 앱으로 서버에 접속한 뒤,
+아래 한 줄을 붙여넣으면 파이썬 환경 구성부터 테스트까지 자동으로 끝난다.
 
 ```bash
-export BITHUMB_ACCESS_KEY="..."
-export BITHUMB_SECRET_KEY="..."
-export TG_BOT_TOKEN="..."   # 선택 (텔레그램 알림)
-export TG_CHAT_ID="..."     # 선택
+curl -fsSL https://raw.githubusercontent.com/sjidok750-creator/Trade/claude/auto-trading-plan-vqnxhb/setup.sh | bash
 ```
+
+설치가 끝나면 키를 입력한다 (`.env`는 `.gitignore`에 있어 커밋되지 않는다):
+
+```bash
+nano ~/Trade/.env
+```
+
+```
+BITHUMB_ACCESS_KEY=발급받은_액세스_키
+BITHUMB_SECRET_KEY=발급받은_시크릿_키
+TG_BOT_TOKEN=텔레그램_봇_토큰
+TG_CHAT_ID=
+```
+
+저장은 `Ctrl+O` → `Enter` → `Ctrl+X`. 이후 환경변수를 불러온다:
+
+```bash
+cd ~/Trade && set -a && . ./.env && set +a
+```
+
+### 텔레그램 연결 확인
+
+```bash
+.venv/bin/python -m engine.notify
+```
+
+챗 ID를 자동으로 찾아 테스트 메시지를 보낸다. 메시지가 도착하면 출력된 챗 ID를
+`.env`의 `TG_CHAT_ID=`에 적어둔다 (다음 실행부터 조회 생략).
 
 ## 백테스트
 
@@ -83,3 +103,7 @@ journalctl -u trade -f          # 로그 확인
 | 일일 손실 한도 | −5% → 당일 매수 중단 | `risk.daily_loss_limit_pct` |
 | 킬스위치 | 고점 대비 −20% → 전량 매도+정지 | `risk.kill_switch_pct` |
 | 수동 정지 | `touch STOP` | 파일 스위치 |
+| 수수료 쿠폰 만료 | 만료 3일 전 경고 + 체결 수수료 역산 감지 | `fee.coupon_renewed_on` |
+
+빗썸의 0.04% 쿠폰은 **신청일로부터 30일**만 유효하다. 재신청 후에는
+`config.yaml`의 `fee.coupon_renewed_on` 날짜를 갱신해야 경고가 정확해진다.
