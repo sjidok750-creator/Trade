@@ -1,0 +1,34 @@
+# 빗썸 자동매매 설정 — Claude가 튜닝 루프에서 이 파일을 조정한다.
+# 운용 규모: 초기 1,000,000 KRW / 성향: 하이리스크
+
+mode:
+  dry_run: true            # true = 페이퍼 트레이딩(실주문 없음). 실전 전환은 사용자 승인 후 false로.
+  poll_interval_sec: 10    # 시세 폴링 주기
+
+universe:                  # 대상 코인 (빗썸 KRW 마켓, 유동성 상위 위주)
+  - KRW-BTC
+  - KRW-ETH
+  - KRW-XRP
+  - KRW-SOL
+  - KRW-DOGE
+  - KRW-ADA
+
+strategy:
+  name: volatility_breakout
+  k: 0.5                   # 돌파 계수 (백테스트로 코인별 재튜닝 예정)
+  reset_hour_kst: 0        # 일봉 리셋 시각 (KST)
+  per_coin_k: {}           # 코인별 k 오버라이드 예: { KRW-BTC: 0.45 }
+  trend_filter_ma: 5       # 당일 시가 > N일 이동평균일 때만 진입 (0 = 필터 없음)
+
+risk:
+  position_pct: 0.18       # 1회 주문 = 총자산의 18% → 6코인 중 최대 5개 동시 보유 가능
+  max_positions: 5         # 동시 보유 최대 코인 수 (하루 최대 ~5회 매수)
+  stop_loss_pct: 0.05      # 개별 포지션 -5% 도달 시 즉시 손절
+  daily_loss_limit_pct: 0.05   # 당일 총자산 -5% → 당일 신규 매수 중단
+  kill_switch_pct: 0.20    # 총자산 고점 대비 -20% → 전량 매도 + 엔진 정지 (하이리스크 설정)
+  crash_guard_pct: 0.10    # 5분 내 ±10% 급변 코인 신규 진입 금지
+  min_order_krw: 5500      # 최소 주문 금액 여유분 (실제 한도는 API로 재확인)
+  max_daily_buys: 6        # 당일 신규 매수 총 횟수 상한
+
+notify:
+  telegram: false          # true 설정 + TG_BOT_TOKEN/TG_CHAT_ID 환경변수 필요
