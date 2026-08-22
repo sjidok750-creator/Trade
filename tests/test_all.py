@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import unittest
 
-from engine import fee_guard, report
+from engine import commands, fee_guard, report
 from engine.risk import RiskManager
 from strategies.ma_trend import update_state
 from strategies.volatility_breakout import compute_signal
@@ -181,6 +181,56 @@ class TestReport(unittest.TestCase):
         msg = report.build("실전", 900_000, 1_000_000, 900_000, {}, {}, {}, ["KRW-BTC"])
         self.assertIn("보유 없음", msg)
         self.assertIn("-10.00%", msg)
+
+
+class TestCommands(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.ctx = {
+            "report": lambda: "현황입니다",
+            "positions": {"KRW-ETH": {"volume": 2.0, "entry_price": 100.0,
+                                      "krw_spent": 200.0}},
+            "prices": {"KRW-ETH": 150.0},
+            "trend": {"KRW-ETH": True, "KRW-BTC": False},
+            "universe": ["KRW-BTC", "KRW-ETH"],
+            "stop_path": os.path.join(self.tmp, "STOP"),
+        }
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_status_and_help(self):
+        self.assertEqual(commands.handle("/status", self.ctx), "현황입니다")
+        self.assertIn("/positions", commands.handle("/help", self.ctx))
+        self.assertIn("/positions", commands.handle("/start", self.ctx))
+
+    def test_positions(self):
+        out = commands.handle("/positions", self.ctx)
+        self.assertIn("ETH", out)
+        self.assertIn("+50.0%", out)     # 100 → 150
+
+    def test_trend(self):
+        out = commands.handle("/trend", self.ctx)
+        self.assertIn("보유대상", out)
+        self.assertIn("현금대기", out)
+
+    def test_stop_resume(self):
+        path = self.ctx["stop_path"]
+        commands.handle("/stop", self.ctx)
+        self.assertTrue(os.path.exists(path))
+        commands.handle("/resume", self.ctx)
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("이미 정상", commands.handle("/resume", self.ctx))
+
+    def test_unknown_and_suffix(self):
+        self.assertIsNone(commands.handle("/뭐라고", self.ctx))
+        # /status@봇이름 형태도 인식
+        self.assertEqual(commands.handle("/status@sjidok_trade_bot", self.ctx), "현황입니다")
+
+    def test_no_trade_commands(self):
+        """매수·매도 원격 지시는 지원하지 않는다 (규칙 기반 전제 보호)."""
+        for c in ("/buy KRW-BTC", "/sell KRW-ETH", "/order"):
+            self.assertIsNone(commands.handle(c, self.ctx))
 
 
 class TestEngineTrend(unittest.TestCase):

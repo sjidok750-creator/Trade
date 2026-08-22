@@ -15,7 +15,7 @@ import yaml
 from exchange.bithumb import Bithumb, BithumbError
 from strategies import ma_trend
 from strategies.volatility_breakout import compute_signal
-from . import fee_guard, notify, report
+from . import commands, fee_guard, notify, report
 from .risk import RiskManager
 from .tradelog import TradeLog
 
@@ -43,6 +43,7 @@ class Engine:
         self.trade_day = ""
         self.price_history = {}  # market -> [(ts, price)] 급변동 가드용
         self.last_report = self._load_json("state/report.json", {}).get("slot", "")
+        self.tg_offset = self._load_json("state/telegram.json", {}).get("offset", 0)
 
     # ---------- 상태 저장 ----------
     @staticmethod
@@ -218,6 +219,27 @@ class Engine:
         self.last_report = slot
         self._save_json("state/report.json", {"slot": slot})
 
+    def poll_commands(self, prices: dict[str, float]):
+        """텔레그램 명령을 확인하고 응답한다 (등록된 사용자만)."""
+        if not self.tg:
+            return
+        eq = self.equity(prices)
+        ctx = {
+            "report": lambda: report.build(
+                "페이퍼" if self.dry_run else "실전", eq, PAPER_START_KRW,
+                self.krw_balance(), self.positions, prices,
+                self._load_json("state/trend.json", {}), self.cfg["universe"]),
+            "positions": self.positions,
+            "prices": prices,
+            "trend": self._load_json("state/trend.json", {}),
+            "universe": self.cfg["universe"],
+            "stop_path": "STOP",
+        }
+        offset = commands.poll(ctx, self.tg_offset)
+        if offset != self.tg_offset:
+            self.tg_offset = offset
+            self._save_json("state/telegram.json", {"offset": offset})
+
     # ---------- 메인 루프 ----------
     def tick(self):
         markets = self.cfg["universe"]
@@ -238,6 +260,7 @@ class Engine:
             notify.send(f"⚠️ 일일 손실 한도 도달, 당일 매수 중단. 총자산 {eq:,.0f}원", self.tg)
 
         self.maybe_report(eq, prices)
+        self.poll_commands(prices)
 
         stop_requested = os.path.exists("STOP")
 
