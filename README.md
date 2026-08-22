@@ -1,14 +1,16 @@
 # 빗썸 자동매매 시스템
 
-계획 전문은 [PLAN.md](PLAN.md) 참고. 운용 규모 100만원, 하이리스크 설정(6코인, 하루 최대 6회 매수).
+**전략 결정 이력·운영 지침은 [HANDOVER.md](HANDOVER.md)를 먼저 읽을 것.** 계획 원문은 [PLAN.md](PLAN.md).
+
+운용 규모 100만원, 6코인(BTC/ETH/XRP/SOL/DOGE/ADA) MA30 추세추종, 주 1회 리밸런싱.
 
 ## 구조
 
 ```
 exchange/    빗썸 API 2.0 클라이언트 (JWT 인증, 출금 기능 없음)
-strategies/  변동성 돌파 전략 (다코인 + 추세 필터)
+strategies/  ma_trend(현행) · volatility_breakout(백테스트 탈락, 보관)
 engine/      24시간 실행 엔진 (리스크 가드, 거래 로그, 텔레그램 알림)
-backtest/    데이터 수집 + 백테스터 (수수료·슬리피지 반영)
+backtest/    데이터 수집 + 백테스터 + 전략 연구실(lab)
 tests/       오프라인 단위 테스트
 config.yaml  전략·리스크 설정 — Claude 튜닝 루프가 이 파일을 조정
 ```
@@ -53,9 +55,9 @@ cd ~/Trade && set -a && . ./.env && set +a
 ## 백테스트
 
 ```bash
-.venv/bin/python -m backtest.data              # 3년치 일봉 수집 → data/
-.venv/bin/python -m backtest.backtester sweep  # k값 0.3~0.8 스윕
-.venv/bin/python -m backtest.backtester        # 현재 config 기준 성과
+.venv/bin/python -m backtest.data          # 3년치 일봉 수집 → data/
+.venv/bin/python -m backtest.lab           # 전략 후보 비교 (BuyHold 기준선 포함)
+.venv/bin/python -m backtest.lab robust    # MA추세 강건성 스윕 (30조합)
 ```
 
 ## 실행
@@ -65,9 +67,9 @@ cd ~/Trade && set -a && . ./.env && set +a
 ```
 
 - `config.yaml`의 `dry_run: true`(기본)면 **페이퍼 트레이딩** — 실주문 없이 가상 체결.
-- 실전 전환은 페이퍼 2주 검증 통과 후 `dry_run: false`로 변경 (사용자 승인 필수).
+- 실전 전환은 페이퍼 1~2주 검증 통과 후 `dry_run: false`로 변경 (사용자 승인 필수).
 - **긴급 정지**: 프로젝트 루트에 `touch STOP` → 신규 매수 즉시 중단 (보유분 손절은 계속 동작).
-- 킬스위치(총자산 고점 대비 −20%) 발동 시 전량 매도 후 엔진이 스스로 정지한다.
+- 킬스위치(총자산 고점 대비 −40%) 발동 시 전량 매도 후 엔진이 스스로 정지한다.
 
 ### systemd 상시 실행 (VPS)
 
@@ -89,7 +91,7 @@ systemctl stop trade        # 정지
 ### 자동 업데이트 (선택)
 
 GitHub에 새 커밋이 올라오면 서버가 스스로 받아 적용한다. 10분마다 확인하며,
-**테스트 17건을 통과해야만** 반영하고 실패하면 이전 버전으로 되돌린 뒤 알린다.
+**전체 테스트를 통과해야만** 반영하고 실패하면 이전 버전으로 되돌린 뒤 알린다.
 
 ```bash
 cp ~/Trade/autoupdate.{service,timer} /etc/systemd/system/
@@ -129,9 +131,9 @@ systemctl disable --now autoupdate.timer # 자동 업데이트 중지
 |------|-----|------|
 | 출금 권한 | 없음 (API 키 발급 시 미부여) | 거래소 설정 |
 | IP 제한 | VPS 고정 IP만 | 거래소 설정 |
-| 개별 손절 | −5% | `risk.stop_loss_pct` |
-| 일일 손실 한도 | −5% → 당일 매수 중단 | `risk.daily_loss_limit_pct` |
-| 킬스위치 | 고점 대비 −20% → 전량 매도+정지 | `risk.kill_switch_pct` |
+| 개별 손절 | −15% (급락 방어, 주 출구는 추세 이탈) | `risk.stop_loss_pct` |
+| 일일 손실 한도 | −8% → 당일 매수 중단 | `risk.daily_loss_limit_pct` |
+| 킬스위치 | 고점 대비 −40% → 전량 매도+정지 | `risk.kill_switch_pct` |
 | 수동 정지 | `touch STOP` | 파일 스위치 |
 | 수수료 쿠폰 만료 | 만료 3일 전 경고 + 체결 수수료 역산 감지 | `fee.coupon_renewed_on` |
 
