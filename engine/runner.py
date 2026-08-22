@@ -8,11 +8,12 @@ dry_run=true(기본)이면 실주문 없이 가상 체결로 동작한다.
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import yaml
 
 from exchange.bithumb import Bithumb, BithumbError
+from strategies import ma_trend
 from strategies.volatility_breakout import compute_signal
 from . import fee_guard, notify
 from .risk import RiskManager
@@ -80,31 +81,76 @@ class Engine:
     def on_new_day(self, prices: dict[str, float]):
         day = self.current_trade_day()
         self.log.event("new_day", day=day)
-        # 1) 전일 포지션 전량 청산
-        for market in list(self.positions):
-            self.sell(market, prices.get(market), reason="daily_reset")
-        # 2) 신호 재계산
-        self.signals = {}
         scfg = self.cfg["strategy"]
-        for market in self.cfg["universe"]:
-            try:
-                candles = self.ex.get_daily_candles(market, count=max(30, scfg["trend_filter_ma"] + 2))
-                k = scfg["per_coin_k"].get(market, scfg["k"])
-                sig = compute_signal(market, candles, k, scfg["trend_filter_ma"])
-                if sig:
-                    self.signals[market] = sig
-            except BithumbError as e:
-                self.log.event("error", where="signal", market=market, error=str(e))
-        # 3) 리스크 리셋
+        if scfg["name"] == "volatility_breakout":
+            # 전일 포지션 전량 청산 후 신호 재계산
+            for market in list(self.positions):
+                self.sell(market, prices.get(market), reason="daily_reset")
+            self.signals = {}
+            for market in self.cfg["universe"]:
+                try:
+                    candles = self.ex.get_daily_candles(market, count=max(30, scfg["trend_filter_ma"] + 2))
+                    k = scfg["per_coin_k"].get(market, scfg["k"])
+                    sig = compute_signal(market, candles, k, scfg["trend_filter_ma"])
+                    if sig:
+                        self.signals[market] = sig
+                except BithumbError as e:
+                    self.log.event("error", where="signal", market=market, error=str(e))
+            self.log.event("signals", day=day, targets={
+                m: {"target": s.target_price, "trend_ok": s.trend_ok}
+                for m, s in self.signals.items()})
         self.risk.new_day(day, self.equity(prices))
         self.trade_day = day
         warn = fee_guard.expiry_warning(self.cfg.get("fee", {}).get("coupon_renewed_on"))
         if warn:
             self.log.event("fee_coupon", message=warn)
             notify.send(warn, self.tg)
-        self.log.event("signals", day=day, targets={
-            m: {"target": s.target_price, "trend_ok": s.trend_ok}
-            for m, s in self.signals.items()})
+        if scfg["name"] == "ma_trend":
+            self.rebalance_trend(prices)
+
+    def rebalance_trend(self, prices: dict[str, float]):
+        """MA 추세추종: rebal_days마다 코인별 추세 상태를 갱신하고
+        목표 보유군에 맞춰 매도/매수한다. 보유 중인 포지션 크기는 건드리지 않는다."""
+        scfg = self.cfg["strategy"]
+        states = self._load_json("state/trend.json", {})
+        last = states.get("_last_rebal", "")
+        if last:
+            elapsed = (date.fromisoformat(self.trade_day) - date.fromisoformat(last)).days
+            if elapsed < scfg.get("rebal_days", 7):
+                return
+        universe = self.cfg["universe"]
+        new_states = {}
+        for m in universe:
+            try:
+                candles = self.ex.get_daily_candles(m, count=scfg["ma_len"] + 3)
+                new_states[m] = ma_trend.update_state(
+                    candles, scfg["ma_len"], scfg["band"], bool(states.get(m, False)))
+            except BithumbError as e:
+                self.log.event("error", where="trend", market=m, error=str(e))
+                new_states[m] = bool(states.get(m, False))
+        new_states["_last_rebal"] = self.trade_day
+        self._save_json("state/trend.json", new_states)
+
+        targets = [m for m in universe if new_states.get(m)]
+        self.log.event("trend_rebalance", day=self.trade_day, targets=targets)
+        # 1) 추세가 꺾인 보유분 매도
+        for m in list(self.positions):
+            if m not in targets:
+                self.sell(m, prices.get(m), reason="trend_exit")
+        # 2) 새로 추세에 오른 코인 매수 (슬롯 = 총자산/유니버스, 수수료 여유 2%)
+        eq = self.equity(prices)
+        slot = eq / len(universe) * 0.98
+        for m in targets:
+            if m in self.positions or m not in prices:
+                continue
+            if self.crash_guard(m, prices[m]):
+                self.log.event("buy_blocked", market=m, reason="급변동 가드")
+                continue
+            ok, why = self.risk.can_buy(len(self.positions), slot, self.krw_balance())
+            if ok:
+                self.buy(m, prices[m], slot, reason=f"trend_entry MA{scfg['ma_len']}")
+            else:
+                self.log.event("buy_blocked", market=m, reason=why)
 
     # ---------- 급변동 가드 ----------
     def crash_guard(self, market: str, price: float) -> bool:
@@ -185,7 +231,9 @@ class Engine:
             if pos and price <= pos["entry_price"] * (1 - self.cfg["risk"]["stop_loss_pct"]):
                 self.sell(market, price, reason="stop_loss")
                 continue
-            # 신규 진입
+            # 신규 진입 (변동성 돌파 전략 전용 — 추세 전략은 리밸런싱에서만 매매)
+            if self.cfg["strategy"]["name"] != "volatility_breakout":
+                continue
             if stop_requested or pos or crashed:
                 continue
             sig = self.signals.get(market)

@@ -10,6 +10,7 @@ import unittest
 
 from engine import fee_guard
 from engine.risk import RiskManager
+from strategies.ma_trend import update_state
 from strategies.volatility_breakout import compute_signal
 
 RISK_CFG = {
@@ -128,6 +129,76 @@ class TestFeeGuard(unittest.TestCase):
         self.assertIn("재신청", fee_guard.fee_anomaly(bad))
         # 계산 불가한 응답은 조용히 무시
         self.assertIsNone(fee_guard.fee_anomaly({}))
+
+
+class TestMaTrend(unittest.TestCase):
+    def _candles(self, closes):
+        """closes: 최신순 종가 리스트 → API 형태"""
+        return [{"trade_price": c, "opening_price": c, "high_price": c, "low_price": c}
+                for c in closes]
+
+    def test_enter_exit_band(self):
+        # 어제 종가 110, 이전 5일 MA 100 → +10%는 밴드 3% 위 → 진입
+        c = self._candles([999, 110] + [100] * 5)
+        self.assertTrue(update_state(c, 5, 0.03, prev=False))
+        # 어제 종가 95 → -5%는 밴드 아래 → 이탈
+        c = self._candles([999, 95] + [100] * 5)
+        self.assertFalse(update_state(c, 5, 0.03, prev=True))
+        # 밴드 안쪽(101)에서는 직전 상태 유지
+        c = self._candles([999, 101] + [100] * 5)
+        self.assertTrue(update_state(c, 5, 0.03, prev=True))
+        self.assertFalse(update_state(c, 5, 0.03, prev=False))
+
+    def test_insufficient_keeps_prev(self):
+        self.assertTrue(update_state(self._candles([100, 100]), 5, 0.03, prev=True))
+
+
+class TestEngineTrend(unittest.TestCase):
+    """가짜 거래소로 추세 전략의 리밸런싱(진입→이탈) 흐름 검증."""
+
+    def test_rebalance_cycle(self):
+        os.chdir(tempfile.mkdtemp())
+        import yaml
+        cfg = {
+            "mode": {"dry_run": True, "poll_interval_sec": 1},
+            "universe": ["KRW-AAA", "KRW-BBB"],
+            "strategy": {"name": "ma_trend", "ma_len": 5, "band": 0.03,
+                         "rebal_days": 7, "reset_hour_kst": 0,
+                         "k": 0.5, "per_coin_k": {}, "trend_filter_ma": 0},
+            "risk": {**RISK_CFG, "max_positions": 6},
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        from engine.runner import Engine
+
+        class FakeExchange:
+            def __init__(self):
+                self.trend = {"KRW-AAA": True, "KRW-BBB": False}
+            def get_tickers(self, markets):
+                return {m: 100.0 for m in markets}
+            def get_daily_candles(self, market, count=10, to=None):
+                yday = 110.0 if self.trend[market] else 90.0
+                return [{"trade_price": p, "opening_price": p,
+                         "high_price": p, "low_price": p}
+                        for p in [999.0, yday] + [100.0] * (count - 2)]
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange()
+        eng.tick()  # 첫 거래일 → 리밸런싱: AAA만 추세
+        self.assertIn("KRW-AAA", eng.positions)
+        self.assertNotIn("KRW-BBB", eng.positions)
+
+        # 7일 뒤 AAA 추세 꺾임 → 매도되어야 함
+        eng.ex.trend["KRW-AAA"] = False
+        states = eng._load_json("state/trend.json", {})
+        states["_last_rebal"] = "2000-01-01"   # 강제로 리밸 기한 경과 처리
+        eng._save_json("state/trend.json", states)
+        eng.trade_day = ""                      # 새 거래일 트리거
+        eng.tick()
+        self.assertNotIn("KRW-AAA", eng.positions)
 
 
 class TestEnginePaper(unittest.TestCase):
