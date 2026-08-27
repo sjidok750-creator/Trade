@@ -210,6 +210,24 @@ class Engine:
             return change >= self.cfg["risk"]["crash_guard_pct"]
         return False
 
+    def _sellable_volume(self, market: str, want: float) -> float:
+        """실전 매도 직전 실제 보유 수량으로 보정한다.
+
+        시장가 매수는 원화 금액 지정이라 실제 체결 수량이 기록과 미세하게
+        다르다. 기록된 수량 그대로 팔면 잔고 부족으로 주문이 거부될 수 있다.
+        """
+        if self.dry_run:
+            return want
+        try:
+            cur = market.split("-", 1)[1]
+            avail = self.ex.get_balances().get(cur, {}).get("balance", 0.0)
+        except BithumbError as e:
+            self.log.event("error", where="sellable", market=market, error=str(e))
+            return want
+        if avail < want * 0.99:
+            self.log.event("volume_clamp", market=market, recorded=want, actual=avail)
+        return min(want, avail)
+
     # ---------- 주문 ----------
     def buy(self, market: str, price: float, krw_amount: float, reason: str):
         volume = krw_amount * (1 - FEE) / price
@@ -233,11 +251,12 @@ class Engine:
         if not pos:
             return
         price = price or pos["entry_price"]
-        krw_got = pos["volume"] * price * (1 - FEE)
+        volume = self._sellable_volume(market, pos["volume"])
+        krw_got = volume * price * (1 - FEE)
         if self.dry_run:
             self.paper["krw"] += krw_got
         else:
-            self.ex.sell_market(market, pos["volume"])
+            self.ex.sell_market(market, volume)
         self.save_state()
         pnl = krw_got - pos["krw_spent"]
         self.log.trade(market, "sell", krw_got, pos["volume"], price,
@@ -252,7 +271,7 @@ class Engine:
         if portion >= 1.0:
             self.sell(market, price, reason)
             return
-        volume = pos["volume"] * portion
+        volume = self._sellable_volume(market, pos["volume"] * portion)
         krw_got = volume * price * (1 - FEE)
         if self.dry_run:
             self.paper["krw"] += krw_got
