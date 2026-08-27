@@ -2,6 +2,7 @@
 
 지원 명령 (등록된 챗 ID에서 온 것만 처리):
     /status      현황 리포트 즉시 발송
+    /settle      출금 완료 확인 — 확정 대기 누적을 0으로 초기화
     /positions   보유 내역 상세
     /trend       코인별 추세 판단 상태
     /stop        신규 매수 중단 (STOP 파일 생성)
@@ -23,6 +24,7 @@ from . import notify
 API = "https://api.telegram.org/bot{token}/{method}"
 HELP = """사용 가능한 명령:
 /status — 현재 자산·손익 현황
+/settle — 출금 완료 처리 (확정 대기액 초기화)
 /positions — 보유 코인 상세
 /trend — 코인별 추세 판단 상태
 /stop — 신규 매수 중단
@@ -97,6 +99,13 @@ def handle(text: str, ctx: dict) -> str | None:
     if cmd == "stop":
         open(ctx["stop_path"], "w").close()
         return "🛑 신규 매수를 중단했습니다.\n(보유분 손절·추세 이탈 매도는 계속 동작합니다)\n재개하려면 /resume"
+
+    if cmd == "settle":
+        done = ctx["settle_done"]()
+        if done <= 0:
+            return "확정 대기 중인 이익이 없습니다."
+        return (f"✅ {done:,.0f}원 출금 완료로 처리했습니다.\n"
+                f"다음 목표까지 다시 운용합니다.")
 
     if cmd == "resume":
         if os.path.exists(ctx["stop_path"]):

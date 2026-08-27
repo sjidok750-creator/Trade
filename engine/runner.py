@@ -15,7 +15,7 @@ import yaml
 from exchange.bithumb import Bithumb, BithumbError
 from strategies import ma_trend
 from strategies.volatility_breakout import compute_signal
-from . import commands, fee_guard, notify, report
+from . import commands, fee_guard, notify, report, skim
 from .risk import RiskManager
 from .tradelog import TradeLog
 
@@ -44,6 +44,9 @@ class Engine:
         self.price_history = {}  # market -> [(ts, price)] 급변동 가드용
         self.last_report = self._load_json("state/report.json", {}).get("slot", "")
         self.tg_offset = self._load_json("state/telegram.json", {}).get("offset", 0)
+        self.settle = self._load_json(
+            "state/settle.json",
+            {"baseline": PAPER_START_KRW, "reserve": 0.0, "cycles": 0})
 
     # ---------- 상태 저장 ----------
     @staticmethod
@@ -70,10 +73,18 @@ class Engine:
         return self.ex.get_balances().get("KRW", {}).get("balance", 0.0)
 
     def equity(self, prices: dict[str, float]) -> float:
+        """투자에 쓰이는 자산. 확정 대기 현금(reserve)은 제외한다."""
+        return self.total_equity(prices) - self.settle.get("reserve", 0.0)
+
+    def total_equity(self, prices: dict[str, float]) -> float:
         total = self.krw_balance()
         for market, pos in self.positions.items():
             total += pos["volume"] * prices.get(market, pos["entry_price"])
         return total
+
+    def investable_cash(self) -> float:
+        """확정 대기분을 뺀 가용 현금."""
+        return max(0.0, self.krw_balance() - self.settle.get("reserve", 0.0))
 
     # ---------- 거래일 ----------
     def current_trade_day(self) -> str:
@@ -148,11 +159,43 @@ class Engine:
             if self.crash_guard(m, prices[m]):
                 self.log.event("buy_blocked", market=m, reason="급변동 가드")
                 continue
-            ok, why = self.risk.can_buy(len(self.positions), slot, self.krw_balance())
+            ok, why = self.risk.can_buy(len(self.positions), slot, self.investable_cash())
             if ok:
                 self.buy(m, prices[m], slot, reason=f"trend_entry MA{scfg['ma_len']}")
             else:
                 self.log.event("buy_blocked", market=m, reason=why)
+        self.skim_profit(prices)
+
+    def skim_profit(self, prices: dict[str, float]):
+        """목표 이익 도달 시 그만큼만 현금화해 출금 대기로 분리한다."""
+        cfg = self.cfg.get("settle", {})
+        target = cfg.get("target_krw", 0)
+        if not target:
+            return
+        min_order = self.cfg["risk"]["min_order_krw"]
+        amount = skim.pending(self.settle["baseline"], self.equity(prices),
+                              target, min_order)
+        if not amount:
+            return
+        p = skim.plan(amount, self.investable_cash(), self.positions, prices, min_order)
+        if not p:
+            self.log.event("skim_deferred", wanted=amount, reason="조달 불가")
+            return
+
+        for market, krw in p.sell.items():
+            pos = self.positions[market]
+            portion = min(1.0, krw / (pos["volume"] * prices[market]))
+            self.sell_partial(market, prices[market], portion, reason="profit_skim")
+
+        self.settle["reserve"] += p.amount
+        self.settle["cycles"] += 1
+        self.risk.withdraw(p.amount)      # 출금은 손실이 아니다 — 낙폭 기준 보정
+        self.settle["baseline"] = self.equity(prices)
+        self._save_json("state/settle.json", self.settle)
+        self.log.event("skim", amount=p.amount, reserve=self.settle["reserve"],
+                       baseline=self.settle["baseline"])
+        notify.send(skim.message(p.amount, self.settle["reserve"],
+                                 self.settle["baseline"]), self.tg)
 
     # ---------- 급변동 가드 ----------
     def crash_guard(self, market: str, price: float) -> bool:
@@ -201,6 +244,26 @@ class Engine:
                        f"{reason} (손익 {pnl:+,.0f}원)", self.dry_run)
         notify.send(f"[매도] {market} @ {price:,.0f} 손익 {pnl:+,.0f}원 ({reason})", self.tg)
 
+    def sell_partial(self, market: str, price: float, portion: float, reason: str):
+        """보유 수량의 일부만 매도한다 (이익 분리용). portion: 0~1"""
+        pos = self.positions.get(market)
+        if not pos or portion <= 0:
+            return
+        if portion >= 1.0:
+            self.sell(market, price, reason)
+            return
+        volume = pos["volume"] * portion
+        krw_got = volume * price * (1 - FEE)
+        if self.dry_run:
+            self.paper["krw"] += krw_got
+        else:
+            self.ex.sell_market(market, volume)
+        # 남은 포지션의 원가도 같은 비율로 줄여 손익 계산을 유지한다
+        pos["volume"] -= volume
+        pos["krw_spent"] *= (1 - portion)
+        self.save_state()
+        self.log.trade(market, "sell", krw_got, volume, price, reason, self.dry_run)
+
     def liquidate_all(self, prices: dict[str, float], reason: str):
         for market in list(self.positions):
             self.sell(market, prices.get(market), reason=reason)
@@ -212,12 +275,26 @@ class Engine:
             return
         mode = "페이퍼" if self.dry_run else "실전"
         trend = self._load_json("state/trend.json", {})
-        msg = report.build(mode, equity, PAPER_START_KRW, self.krw_balance(),
-                           self.positions, prices, trend, self.cfg["universe"])
+        msg = report.build(mode, equity, PAPER_START_KRW, self.investable_cash(),
+                           self.positions, prices, trend, self.cfg["universe"],
+                           self.settle.get("reserve", 0.0),
+                           self.settle.get("cycles", 0))
         notify.send(msg, self.tg)
         self.log.event("report", slot=slot, equity=equity)
         self.last_report = slot
         self._save_json("state/report.json", {"slot": slot})
+
+    def confirm_settled(self) -> float:
+        """사용자가 출금을 마쳤음을 확인 — 확정 대기액을 비운다."""
+        done = self.settle.get("reserve", 0.0)
+        if done > 0:
+            if self.dry_run:      # 페이퍼에서는 가상 잔고에서도 실제로 빼준다
+                self.paper["krw"] = max(0.0, self.paper["krw"] - done)
+                self.save_state()
+            self.settle["reserve"] = 0.0
+            self._save_json("state/settle.json", self.settle)
+            self.log.event("settled", amount=done)
+        return done
 
     def poll_commands(self, prices: dict[str, float]):
         """텔레그램 명령을 확인하고 응답한다 (등록된 사용자만)."""
@@ -227,13 +304,15 @@ class Engine:
         ctx = {
             "report": lambda: report.build(
                 "페이퍼" if self.dry_run else "실전", eq, PAPER_START_KRW,
-                self.krw_balance(), self.positions, prices,
-                self._load_json("state/trend.json", {}), self.cfg["universe"]),
+                self.investable_cash(), self.positions, prices,
+                self._load_json("state/trend.json", {}), self.cfg["universe"],
+                self.settle.get("reserve", 0.0), self.settle.get("cycles", 0)),
             "positions": self.positions,
             "prices": prices,
             "trend": self._load_json("state/trend.json", {}),
             "universe": self.cfg["universe"],
             "stop_path": "STOP",
+            "settle_done": self.confirm_settled,
         }
         offset = commands.poll(ctx, self.tg_offset)
         if offset != self.tg_offset:

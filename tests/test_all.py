@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import unittest
 
-from engine import commands, fee_guard, report
+from engine import commands, fee_guard, report, skim
 from engine.risk import RiskManager
 from strategies.ma_trend import update_state
 from strategies.volatility_breakout import compute_signal
@@ -72,6 +72,16 @@ class TestRisk(unittest.TestCase):
         for _ in range(6):
             self.rm.record_buy()
         self.assertFalse(self.rm.can_buy(0, 100_000, 500_000)[0])   # 일일 횟수 상한
+
+    def test_withdraw_is_not_a_loss(self):
+        """이익 확정(출금)으로 자산이 줄어도 킬스위치가 발동하면 안 된다."""
+        self.rm.check_equity(1_300_000)          # 고점 갱신
+        self.rm.withdraw(280_000)                # 이익 분리
+        # 출금 후 자산 1,020,000은 손실이 아니므로 킬스위치 발동 금지
+        self.assertIsNone(self.rm.check_equity(1_020_000))
+        self.assertFalse(self.rm.state.halted)
+        # 보정 후에도 진짜 급락은 여전히 잡아낸다
+        self.assertEqual(self.rm.check_equity(700_000), "kill_switch")
 
     def test_state_persists(self):
         self.rm.record_buy()
@@ -216,6 +226,109 @@ class TestTakeProfit(unittest.TestCase):
         self.assertAlmostEqual(a.total_return_pct, b.total_return_pct)
 
 
+class TestSkim(unittest.TestCase):
+    def test_pending_thresholds(self):
+        # 목표 미달이면 확정하지 않는다
+        self.assertEqual(skim.pending(1_000_000, 1_015_000, 20_000, 5_500), 0)
+        # 딱 도달하면 목표만큼
+        self.assertEqual(skim.pending(1_000_000, 1_020_000, 20_000, 5_500), 20_000)
+        # 배수로 쌓였으면 배수만큼 한 번에
+        self.assertEqual(skim.pending(1_000_000, 1_055_000, 20_000, 5_500), 40_000)
+        # 손실 구간에서는 확정 없음
+        self.assertEqual(skim.pending(1_000_000, 950_000, 20_000, 5_500), 0)
+
+    def test_plan_uses_cash_first(self):
+        p = skim.plan(20_000, cash=50_000, positions={}, prices={}, min_order=5_500)
+        self.assertEqual(p.from_cash, 20_000)
+        self.assertEqual(p.sell, {})
+
+    def test_plan_sells_proportionally(self):
+        positions = {"KRW-A": {"volume": 1.0}, "KRW-B": {"volume": 3.0}}
+        prices = {"KRW-A": 100_000.0, "KRW-B": 100_000.0}   # A:B = 1:3
+        p = skim.plan(20_000, cash=0, positions=positions, prices=prices,
+                      min_order=1_000)
+        self.assertAlmostEqual(p.sell["KRW-A"], 5_000)
+        self.assertAlmostEqual(p.sell["KRW-B"], 15_000)
+        self.assertAlmostEqual(sum(p.sell.values()), 20_000)
+
+    def test_plan_refuses_when_insufficient(self):
+        positions = {"KRW-A": {"volume": 0.01}}
+        prices = {"KRW-A": 100_000.0}         # 보유 평가액 1,000원
+        self.assertIsNone(skim.plan(20_000, 0, positions, prices, 5_500))
+
+
+class TestEngineSkim(unittest.TestCase):
+    """엔진에서 이익 분리 → 출금 대기 → /settle 초기화 전체 흐름 검증."""
+
+    def _engine(self, price):
+        os.chdir(tempfile.mkdtemp())
+        import yaml
+        cfg = {
+            "mode": {"dry_run": True, "poll_interval_sec": 1},
+            "universe": ["KRW-AAA"],
+            "strategy": {"name": "ma_trend", "ma_len": 5, "band": 0.03,
+                         "rebal_days": 7, "reset_hour_kst": 0,
+                         "k": 0.5, "per_coin_k": {}, "trend_filter_ma": 0},
+            "risk": {**RISK_CFG, "max_positions": 6, "min_order_krw": 5_500},
+            "settle": {"target_krw": 20_000},
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(cfg, f)
+        from engine.runner import Engine
+
+        class FakeExchange:
+            def __init__(self, p):
+                self.price = p
+            def get_tickers(self, markets):
+                return {"KRW-AAA": self.price}
+            def get_daily_candles(self, market, count=10, to=None):
+                return [{"trade_price": v, "opening_price": v,
+                         "high_price": v, "low_price": v}
+                        for v in [999.0, 110.0] + [100.0] * (count - 2)]
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange(price)
+        return eng
+
+    def test_skim_cycle(self):
+        eng = self._engine(1000.0)
+        eng.tick()                      # 진입
+        self.assertIn("KRW-AAA", eng.positions)
+        self.assertEqual(eng.settle["reserve"], 0.0)
+
+        eng.ex.price = 1300.0           # +30% → 이익이 목표를 넘김
+        eng.trade_day = ""
+        states = eng._load_json("state/trend.json", {})
+        states["_last_rebal"] = "2000-01-01"
+        eng._save_json("state/trend.json", states)
+        eng.tick()
+
+        # 이익이 분리되어 출금 대기로 잡혔는지
+        self.assertGreaterEqual(eng.settle["reserve"], 20_000)
+        # 분리된 현금은 투자자산에서 제외된다
+        prices = {"KRW-AAA": 1300.0}
+        self.assertAlmostEqual(eng.total_equity(prices) - eng.settle["reserve"],
+                               eng.equity(prices))
+        # 포지션은 전량 청산되지 않고 일부만 줄었다
+        self.assertIn("KRW-AAA", eng.positions)
+
+        # /settle 로 출금 확인 → 대기액 0
+        done = eng.confirm_settled()
+        self.assertGreaterEqual(done, 20_000)
+        self.assertEqual(eng.settle["reserve"], 0.0)
+
+    def test_no_skim_when_disabled(self):
+        eng = self._engine(1000.0)
+        eng.cfg["settle"]["target_krw"] = 0
+        eng.tick()
+        eng.ex.price = 2000.0
+        eng.trade_day = ""
+        eng.tick()
+        self.assertEqual(eng.settle["reserve"], 0.0)
+
+
 class TestCommands(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -227,7 +340,9 @@ class TestCommands(unittest.TestCase):
             "trend": {"KRW-ETH": True, "KRW-BTC": False},
             "universe": ["KRW-BTC", "KRW-ETH"],
             "stop_path": os.path.join(self.tmp, "STOP"),
+            "settle_done": lambda: self.settled,
         }
+        self.settled = 0.0
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -259,6 +374,11 @@ class TestCommands(unittest.TestCase):
         self.assertIsNone(commands.handle("/뭐라고", self.ctx))
         # /status@봇이름 형태도 인식
         self.assertEqual(commands.handle("/status@sjidok_trade_bot", self.ctx), "현황입니다")
+
+    def test_settle(self):
+        self.assertIn("없습니다", commands.handle("/settle", self.ctx))
+        self.settled = 23_400.0
+        self.assertIn("23,400", commands.handle("/settle", self.ctx))
 
     def test_no_trade_commands(self):
         """매수·매도 원격 지시는 지원하지 않는다 (규칙 기반 전제 보호)."""

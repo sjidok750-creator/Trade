@@ -82,3 +82,15 @@ class RiskManager:
     def record_buy(self):
         self.state.daily_buys += 1
         self.save()
+
+    def withdraw(self, amount: float):
+        """이익 확정·출금으로 자산이 줄어든 것을 손실과 구분해 기준선을 낮춘다.
+
+        이 보정이 없으면 확정 직후 자산 감소가 낙폭으로 잡혀 킬스위치가
+        잘못 발동한다 (출금은 손실이 아니다).
+        """
+        if amount <= 0:
+            return
+        self.state.peak_equity = max(0.0, self.state.peak_equity - amount)
+        self.state.day_start_equity = max(0.0, self.state.day_start_equity - amount)
+        self.save()

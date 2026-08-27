@@ -18,7 +18,8 @@ def due(last_slot: str, now: datetime | None = None) -> str | None:
 
 
 def build(mode: str, equity: float, start_capital: float, krw: float,
-          positions: dict, prices: dict, trend: dict, universe: list) -> str:
+          positions: dict, prices: dict, trend: dict, universe: list,
+          reserve: float = 0.0, settled_cycles: int = 0) -> str:
     """현황 메시지 작성.
 
     positions: {market: {volume, entry_price, krw_spent}}
@@ -30,8 +31,10 @@ def build(mode: str, equity: float, start_capital: float, krw: float,
     now = datetime.now(KST).strftime("%m/%d %H:%M")
 
     lines = [f"{sign} [{mode}] {now} 현황",
-             f"총자산 {equity:,.0f}원 ({pct:+.2f}%, {pnl:+,.0f}원)",
+             f"운용자산 {equity:,.0f}원 ({pct:+.2f}%, {pnl:+,.0f}원)",
              f"현금 {krw:,.0f}원"]
+    if reserve > 0:
+        lines.append(f"💰 출금 대기 {reserve:,.0f}원 (출금 후 /settle)")
 
     if positions:
         lines.append("")
