@@ -368,6 +368,11 @@ class Engine:
     def run(self):
         mode = "페이퍼(가상)" if self.dry_run else "실전"
         self.log.event("engine_start", mode=mode)
+        if self.tg:
+            problem = commands.config_problem()
+            if problem:
+                self.log.event("telegram_config", problem=problem)
+                print(f"[텔레그램 설정 경고] {problem}", flush=True)
         notify.send(f"엔진 시작 — {mode} 모드", self.tg)
         interval = self.cfg["mode"]["poll_interval_sec"]
         errors = 0

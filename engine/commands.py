@@ -32,6 +32,20 @@ HELP = """사용 가능한 명령:
 /help — 이 목록"""
 
 
+def config_problem() -> str | None:
+    """명령 수신이 불가능한 설정이면 그 이유를 반환. 정상이면 None.
+
+    TG_CHAT_ID가 비어 있으면 모든 명령이 조용히 무시된다. 원인을 알 수 없는
+    무응답 상태가 되므로 기동 시 드러낸다.
+    """
+    if not os.environ.get("TG_BOT_TOKEN"):
+        return "TG_BOT_TOKEN 없음 — 텔레그램 발송·수신 모두 불가"
+    if not os.environ.get("TG_CHAT_ID"):
+        return ("TG_CHAT_ID 없음 — 알림은 가지만 명령(/status 등)은 응답하지 않는다. "
+                ".env에 챗 ID를 넣고 systemctl restart trade")
+    return None
+
+
 def fetch_updates(offset: int) -> tuple[list, int]:
     """새 메시지 목록과 다음 offset을 반환. 실패하면 빈 목록."""
     token = os.environ.get("TG_BOT_TOKEN")

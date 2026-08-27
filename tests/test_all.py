@@ -380,6 +380,53 @@ class TestCommands(unittest.TestCase):
         self.settled = 23_400.0
         self.assertIn("23,400", commands.handle("/settle", self.ctx))
 
+    def test_config_problem_detects_missing_chat_id(self):
+        """챗 ID 누락은 명령 무응답의 원인이므로 반드시 진단되어야 한다."""
+        saved = {k: os.environ.get(k) for k in ("TG_BOT_TOKEN", "TG_CHAT_ID")}
+        try:
+            os.environ["TG_BOT_TOKEN"] = "t"
+            os.environ["TG_CHAT_ID"] = ""
+            self.assertIn("TG_CHAT_ID", commands.config_problem())
+            os.environ["TG_CHAT_ID"] = "123"
+            self.assertIsNone(commands.config_problem())
+            os.environ["TG_BOT_TOKEN"] = ""
+            self.assertIn("TG_BOT_TOKEN", commands.config_problem())
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_only_registered_chat_is_served(self):
+        """등록되지 않은 발신자의 메시지는 걸러져야 한다."""
+        saved = {k: os.environ.get(k) for k in ("TG_BOT_TOKEN", "TG_CHAT_ID")}
+        try:
+            os.environ["TG_BOT_TOKEN"] = "t"
+            os.environ["TG_CHAT_ID"] = "111"
+
+            class R:
+                def __init__(self, p): self._p = p
+                def json(self): return self._p
+
+            orig = commands.requests.get
+            commands.requests.get = lambda *a, **k: R({"ok": True, "result": [
+                {"update_id": 1, "message": {"chat": {"id": 111}, "text": "/help"}},
+                {"update_id": 2, "message": {"chat": {"id": 222}, "text": "/stop"}},
+            ]})
+            try:
+                msgs, offset = commands.fetch_updates(0)
+            finally:
+                commands.requests.get = orig
+            self.assertEqual(msgs, ["/help"])     # 남의 명령은 제외
+            self.assertEqual(offset, 3)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     def test_no_trade_commands(self):
         """매수·매도 원격 지시는 지원하지 않는다 (규칙 기반 전제 보호)."""
         for c in ("/buy KRW-BTC", "/sell KRW-ETH", "/order"):
