@@ -183,6 +183,39 @@ class TestReport(unittest.TestCase):
         self.assertIn("-10.00%", msg)
 
 
+class TestTakeProfit(unittest.TestCase):
+    """익절 규칙이 실제로 자산을 잠그고 재진입을 지연시키는지 검증."""
+
+    def setUp(self):
+        # 매일 +10% 오르는 단일 코인, 항상 100% 보유하는 전략
+        self.dates = [f"2026-01-{d:02d}" for d in range(1, 11)]
+        price = {d: 100.0 * (1.1 ** i) for i, d in enumerate(self.dates)}
+        self.closes = {"KRW-X": price}
+        self.always = lambda i: {"KRW-X": 1.0}
+
+    def test_take_profit_caps_upside(self):
+        from backtest.portfolio import run
+        base = run("base", self.dates, self.closes, self.always, cost=0.0)
+        tp = run("tp", self.dates, self.closes, self.always, cost=0.0,
+                 take_profit=0.05)
+        # 상승장에서 익절은 수익을 깎는다 (오른 만큼 못 먹음)
+        self.assertLess(tp.total_return_pct, base.total_return_pct)
+
+    def test_cooldown_reduces_market_exposure(self):
+        from backtest.portfolio import run
+        no_cd = run("a", self.dates, self.closes, self.always, cost=0.0,
+                    take_profit=0.05, cooldown=0)
+        with_cd = run("b", self.dates, self.closes, self.always, cost=0.0,
+                      take_profit=0.05, cooldown=3)
+        self.assertLess(with_cd.days_in_market_pct, no_cd.days_in_market_pct)
+
+    def test_disabled_by_default(self):
+        from backtest.portfolio import run
+        a = run("a", self.dates, self.closes, self.always, cost=0.0)
+        b = run("b", self.dates, self.closes, self.always, cost=0.0, take_profit=0.0)
+        self.assertAlmostEqual(a.total_return_pct, b.total_return_pct)
+
+
 class TestCommands(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

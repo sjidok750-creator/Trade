@@ -44,20 +44,36 @@ def _metrics(name, equity, turnover, cost_paid, in_market_days, n_days):
                   in_market_days / n_days * 100, equity)
 
 
-def run(name, dates, closes, weight_fn, start_capital=1_000_000.0, cost=COST):
+def run(name, dates, closes, weight_fn, start_capital=1_000_000.0, cost=COST,
+        take_profit=0.0, cooldown=0):
     """weight_fn(i) -> {market: weight}  — i일의 목표 비중 (i-1일까지 정보로 결정)
 
     closes: {market: {date: close}}
+    take_profit: 0보다 크면 '익절 후 재진입' 규칙을 적용한다.
+        직전 정산 시점 대비 자산이 이 비율만큼 늘면 전량 현금화하고 기준을
+        갱신한다. cooldown일 동안 재진입을 막은 뒤 전략 신호를 다시 따른다.
+        (예: 0.02 = 순수익 2% — 100만원 기준 2만원마다 정산)
     """
     equity = [start_capital]
     cur = {}                 # 현재 비중
     cost_paid = 0.0
     turnover = 0.0
     in_market = 0
+    baseline = start_capital  # 익절 기준 자산
+    wait = 0                  # 재진입 대기 잔여일
 
     for i in range(1, len(dates)):
         d_prev, d_now = dates[i - 1], dates[i]
         target = weight_fn(i) or {}
+
+        if take_profit > 0:
+            if wait > 0:                     # 정산 직후 대기 중 → 현금 유지
+                target = {}
+                wait -= 1
+            elif equity[-1] >= baseline * (1 + take_profit):
+                target = {}                  # 목표 달성 → 전량 정산
+                baseline = equity[-1]
+                wait = cooldown
 
         # 리밸런싱 비용: 비중 변화량 절반씩 사고팔므로 |Δ| 합에 편도 비용
         markets = set(cur) | set(target)

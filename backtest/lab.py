@@ -130,6 +130,23 @@ def robust(markets, dates, closes):
             print()
 
 
+def takeprofit(markets, dates, closes):
+    """익절 후 재진입 규칙을 여러 목표치로 검증한다.
+
+    "순수익 N원마다 정산하고 다시 거래" 아이디어의 실제 효과를 측정한다.
+    기준은 익절 없는 현행 전략(MA30/밴드3%/주1회).
+    """
+    px = {m: series(closes, m, dates) for m in markets}
+    fn = ma_trend_factory(markets, px, 30, 0.03, 7)
+    print("익절 규칙 비교 — 기준: MA30 추세추종 (100만원 운용 가정)\n")
+    print(ROW.format(name="익절없음", r=run("익절없음", dates, closes, fn)))
+    for tp, label in ((0.02, "2%=2만원"), (0.05, "5%=5만원"), (0.10, "10%=10만원")):
+        for cd in (0, 7):
+            name = f"{label}/{cd}일대기"
+            r = run(name, dates, closes, fn, take_profit=tp, cooldown=cd)
+            print(ROW.format(name=name, r=r))
+
+
 def main():
     with open("config.yaml") as f:
         markets = yaml.safe_load(f)["universe"]
@@ -137,6 +154,8 @@ def main():
     print(f"기간: {dates[0]} ~ {dates[-1]} ({len(dates)}일)\n")
     if len(sys.argv) > 1 and sys.argv[1] == "robust":
         return robust(markets, dates, closes)
+    if len(sys.argv) > 1 and sys.argv[1] == "takeprofit":
+        return takeprofit(markets, dates, closes)
     header = f"{'전략':>14} | {'총수익':>8} | {'연복리':>7} | {'MDD':>6} | {'샤프':>5} | {'회전':>6} | {'비용':>6} | {'투자일':>5}"
     print(header)
     print("-" * len(header))
