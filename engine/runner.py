@@ -46,7 +46,7 @@ class Engine:
         self.tg_offset = self._load_json("state/telegram.json", {}).get("offset", 0)
         self.settle = self._load_json(
             "state/settle.json",
-            {"baseline": PAPER_START_KRW, "reserve": 0.0, "cycles": 0})
+            {"baseline": 0.0, "reserve": 0.0, "cycles": 0, "start": 0.0})
 
     # ---------- 상태 저장 ----------
     @staticmethod
@@ -112,6 +112,15 @@ class Engine:
             self.log.event("signals", day=day, targets={
                 m: {"target": s.target_price, "trend_ok": s.trend_ok}
                 for m, s in self.signals.items()})
+        if self.settle.get("baseline", 0) <= 0:
+            # 첫 거래일: 실제 시작 자산을 기준선으로 잡는다.
+            # 고정값(100만원)을 쓰면 시작 잔고가 그와 다를 때 차액을
+            # 이익/손실로 오인한다 (예: 110만원 시작 → 10만원을 첫날 "확정").
+            eq0 = self.equity(prices)
+            self.settle["baseline"] = eq0
+            self.settle["start"] = eq0
+            self._save_json("state/settle.json", self.settle)
+            self.log.event("capital_baseline", start=eq0)
         self.risk.new_day(day, self.equity(prices))
         self.trade_day = day
         warn = fee_guard.expiry_warning(self.cfg.get("fee", {}).get("coupon_renewed_on"))
@@ -294,7 +303,8 @@ class Engine:
             return
         mode = "페이퍼" if self.dry_run else "실전"
         trend = self._load_json("state/trend.json", {})
-        msg = report.build(mode, equity, PAPER_START_KRW, self.investable_cash(),
+        start = self.settle.get("start") or PAPER_START_KRW
+        msg = report.build(mode, equity, start, self.investable_cash(),
                            self.positions, prices, trend, self.cfg["universe"],
                            self.settle.get("reserve", 0.0),
                            self.settle.get("cycles", 0))
@@ -322,7 +332,8 @@ class Engine:
         eq = self.equity(prices)
         ctx = {
             "report": lambda: report.build(
-                "페이퍼" if self.dry_run else "실전", eq, PAPER_START_KRW,
+                "페이퍼" if self.dry_run else "실전", eq,
+                self.settle.get("start") or PAPER_START_KRW,
                 self.investable_cash(), self.positions, prices,
                 self._load_json("state/trend.json", {}), self.cfg["universe"],
                 self.settle.get("reserve", 0.0), self.settle.get("cycles", 0)),

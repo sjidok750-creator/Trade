@@ -319,6 +319,16 @@ class TestEngineSkim(unittest.TestCase):
         self.assertGreaterEqual(done, 20_000)
         self.assertEqual(eng.settle["reserve"], 0.0)
 
+    def test_baseline_set_from_actual_start(self):
+        """시작 잔고가 기준선이 되어야 한다 — 고정 100만원이 아니라."""
+        eng = self._engine(1000.0)
+        eng.paper["krw"] = 1_100_000.0     # 110만원으로 시작
+        eng.tick()
+        # 10만원 초과분이 '이익'으로 확정되면 안 된다
+        self.assertEqual(eng.settle["reserve"], 0.0)
+        self.assertGreater(eng.settle["baseline"], 1_000_000)
+        self.assertAlmostEqual(eng.settle["start"], eng.settle["baseline"])
+
     def test_no_skim_when_disabled(self):
         eng = self._engine(1000.0)
         eng.cfg["settle"]["target_krw"] = 0
