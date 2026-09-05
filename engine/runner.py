@@ -47,6 +47,11 @@ class Engine:
         self.settle = self._load_json(
             "state/settle.json",
             {"baseline": 0.0, "reserve": 0.0, "cycles": 0, "start": 0.0})
+        # 같은 거래일 안의 재시작이면 new_day를 다시 돌리지 않는다.
+        # 다시 돌리면 일일 손실 한도의 기준 자산이 재시작 시점으로 밀린다.
+        if (self.risk.state.day == self.current_trade_day()
+                and self.settle.get("baseline", 0) > 0):
+            self.trade_day = self.risk.state.day
 
     # ---------- 상태 저장 ----------
     @staticmethod

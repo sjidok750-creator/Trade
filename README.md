@@ -108,6 +108,17 @@ systemctl disable --now autoupdate.timer # 자동 업데이트 중지
 실전 모드(`dry_run: false`)에서는 `config.yaml`(전략·리스크 한도) 변경이 포함된
 업데이트를 자동 적용하지 않고 보류 알림만 보낸다 — 돈이 걸린 설정은 사람이 승인한다.
 
+## 주간 요약 (Claude 리뷰용)
+
+```bash
+cd ~/Trade && set -a && . ./.env && set +a && .venv/bin/python -m engine.weekly
+```
+
+출력 전체를 복사해 Claude에게 붙여넣으면 주간 리뷰가 된다. 자산 흐름, 같은
+코인 단순보유(BuyHold) 대비 성적, 체결 슬리피지, 거래·추세·이익확정·리스크
+상태, 재시작·오류 이벤트, 쿠폰 잔여일이 한 화면에 나온다. 월간 판정은
+`engine.weekly 30`.
+
 ## 텔레그램 명령
 
 봇에게 메시지를 보내면 응답한다 (등록된 챗 ID에서 온 것만 처리).

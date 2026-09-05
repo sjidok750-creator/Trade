@@ -535,5 +535,120 @@ class TestEnginePaper(unittest.TestCase):
                             and "stop_loss" in e["reason"] for e in events))
 
 
+
+
+class TestWeekly(unittest.TestCase):
+    """주간 요약이 로그·상태만으로도, 거래소 조회가 더해져도 핵심 수치를 낸다."""
+
+    CFG = {
+        "mode": {"dry_run": False},
+        "universe": ["KRW-AAA", "KRW-BBB"],
+        "strategy": {"name": "ma_trend", "ma_len": 30, "band": 0.03, "rebal_days": 7},
+        "risk": {**RISK_CFG, "kill_switch_pct": 0.40},
+        "settle": {"target_krw": 20_000},
+        "fee": {"coupon_renewed_on": None},
+    }
+
+    def _data(self):
+        from datetime import datetime, timedelta, timezone
+        from engine import weekly
+        now = datetime(2026, 9, 5, 22, 0, tzinfo=weekly.KST)
+        t0 = (now - timedelta(days=3)).astimezone(timezone.utc)
+        events = [
+            {"type": "engine_start", "ts": t0.isoformat(), "mode": "실전"},
+            {"type": "trade", "ts": t0.isoformat(), "market": "KRW-AAA", "side": "buy",
+             "krw": 500_000, "volume": 5.0, "price": 100_000, "reason": "trend_entry"},
+            {"type": "trend_rebalance", "ts": t0.isoformat(), "day": "2026-09-02",
+             "targets": ["KRW-AAA"]},
+            {"type": "error", "ts": t0.isoformat(), "where": "tick", "error": "timeout"},
+        ]
+        equity = [(t0, 1_000_000.0), (t0 + timedelta(days=1), 990_000.0)]
+        positions = {"KRW-AAA": {"volume": 5.0, "entry_price": 100_000, "krw_spent": 500_000}}
+        trend = {"KRW-AAA": True, "KRW-BBB": False, "_last_rebal": "2026-09-02"}
+        settle = {"start": 1_000_000.0, "baseline": 1_000_000.0, "reserve": 0.0, "cycles": 0}
+        risk = {"peak_equity": 1_000_000.0}
+        return now, events, equity, positions, trend, settle, risk
+
+    def test_offline_summary(self):
+        from engine import weekly
+        now, events, equity, positions, trend, settle, risk = self._data()
+        out = weekly.build(7, self.CFG, events, equity, positions, trend, settle, risk,
+                           None, None, None, now=now)
+        self.assertIn("실전", out)
+        self.assertIn("990,000", out)            # 마지막 기록 자산
+        self.assertIn("거래소 조회 불가", out)
+        self.assertIn("[거래] 1건", out)
+        self.assertIn("재시작 1, error 1", out)
+        self.assertIn("timeout", out)
+        self.assertIn("다음 2026-09-09", out)    # 리밸런싱 예정일
+
+    def test_online_summary(self):
+        from engine import weekly
+        now, events, equity, positions, trend, settle, risk = self._data()
+        prices = {"KRW-AAA": 110_000.0, "KRW-BBB": 50.0}
+        balances = {"KRW": {"balance": 500_000.0}, "AAA": {"balance": 4.99}}
+        # 7일 전 종가: AAA 100,000 / BBB 100 → 단순보유 AAA +10%, BBB -50%
+        candles = {"KRW-AAA": [{"trade_price": 100_000}] * 9,
+                   "KRW-BBB": [{"trade_price": 100}] * 9}
+        out = weekly.build(7, self.CFG, events, equity, positions, trend, settle, risk,
+                           prices, balances, candles, now=now)
+        self.assertIn("현재 1,050,000원 (+5.00%)", out)      # 500,000 현금 + 5×110,000
+        self.assertIn("2코인 균등보유 -20.00%", out)
+        self.assertIn("전략 +5.00%", out)
+        self.assertIn("(-0.200%)", out)                       # 수량 기록 5.0 vs 실제 4.99
+        self.assertIn("진행 이익 +50,000원", out)
+
+    def test_buyhold_returns(self):
+        from engine.weekly import buyhold_returns
+        r = buyhold_returns({"KRW-X": [{"trade_price": 120}, {"trade_price": 110},
+                                       {"trade_price": 100}]},
+                            {"KRW-X": 130.0}, days=2)
+        self.assertAlmostEqual(r["KRW-X"], 30.0)
+
+
+class TestEngineRestart(unittest.TestCase):
+    """같은 거래일 안의 재시작은 new_day를 다시 돌리지 않는다."""
+
+    def test_same_day_restart_keeps_day_start(self):
+        os.chdir(tempfile.mkdtemp())
+        import yaml
+        cfg = {
+            "mode": {"dry_run": True, "poll_interval_sec": 1},
+            "universe": ["KRW-AAA"],
+            "strategy": {"name": "ma_trend", "ma_len": 5, "band": 0.03,
+                         "rebal_days": 7, "reset_hour_kst": 0,
+                         "k": 0.5, "per_coin_k": {}, "trend_filter_ma": 0},
+            "risk": {**RISK_CFG, "max_positions": 6},
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(cfg, f)
+        from engine.runner import Engine
+
+        class FakeExchange:
+            price = 100.0
+            def get_tickers(self, markets):
+                return {"KRW-AAA": self.price}
+            def get_daily_candles(self, market, count=10, to=None):
+                return [{"trade_price": v, "opening_price": v,
+                         "high_price": v, "low_price": v}
+                        for v in [999.0, 110.0] + [100.0] * (count - 2)]
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange()
+        eng.tick()                                   # 첫 거래일 → 진입, 기준 자산 기록
+        day_start = eng.risk.state.day_start_equity
+        self.assertGreater(day_start, 0)
+
+        # 가격이 떨어진 뒤 재시작 — new_day가 다시 돌면 기준이 낮아져 한도가 무력화된다
+        eng2 = Engine(cfg)
+        eng2.ex = FakeExchange()
+        eng2.ex.price = 97.0                          # -3%: 손절(-5%)은 안 걸림
+        self.assertEqual(eng2.trade_day, eng.risk.state.day)
+        eng2.tick()
+        self.assertAlmostEqual(eng2.risk.state.day_start_equity, day_start)
+        self.assertIn("KRW-AAA", eng2.positions)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
