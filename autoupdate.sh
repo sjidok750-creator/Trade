@@ -3,16 +3,18 @@
 # systemd 타이머가 10분마다 실행하며, 테스트 실패 시 기존 버전을 유지한다.
 set -uo pipefail
 
-DIR="$HOME/Trade"
+# systemd가 실행할 때는 $HOME이 비어 있을 수 있다 — 스크립트 위치로 이동한다
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH="claude/auto-trading-plan-vqnxhb"
-cd "$DIR" || exit 1
+cd "$DIR" || { echo "작업 디렉터리 이동 실패: $DIR"; exit 1; }
+export HOME="${HOME:-/root}"
 
 notify() {
   set -a; . ./.env 2>/dev/null; set +a
   .venv/bin/python -m engine.notify "$1" >/dev/null 2>&1
 }
 
-git fetch -q origin "$BRANCH" 2>/dev/null || exit 0
+git fetch -q origin "$BRANCH" || { echo "git fetch 실패 (네트워크?)"; exit 0; }
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/$BRANCH")
 [ "$LOCAL" = "$REMOTE" ] && exit 0          # 변경 없음
