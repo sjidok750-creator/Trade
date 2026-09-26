@@ -774,5 +774,62 @@ class TestEngineConcentrate(unittest.TestCase):
         self.assertGreater(eng.positions["KRW-AAA"]["krw_spent"], before)   # 추가 매수가 합쳐짐
 
 
+class TestScalpLab(unittest.TestCase):
+    """단타 연구실의 신호·체결 가정 검증 (미래 참조 없음, 보수적 체결)."""
+
+    def _data(self, series):
+        """series: {market: [(open, high, low, close, value), ...]} → Data"""
+        import csv as _csv
+        from backtest.scalp import Data
+        d = tempfile.mkdtemp()
+        for m, rows in series.items():
+            with open(os.path.join(d, f"{m}.csv"), "w", newline="") as f:
+                w = _csv.writer(f)
+                w.writerow(["ts", "open", "high", "low", "close", "value"])
+                for i, r in enumerate(rows):
+                    day, hour = divmod(i, 24)
+                    w.writerow([f"2026-{1 + day // 28:02d}-{1 + day % 28:02d}T{hour:02d}:00:00", *r])
+        return Data(list(series), data_dir=d)
+
+    def _flat(self, n, p=100.0, v=1e8):
+        return [(p, p, p, p, v)] * n
+
+    def test_slippage_tiers(self):
+        from backtest.scalp import slip_for
+        self.assertLess(slip_for(2e10), slip_for(5e9))
+        self.assertLess(slip_for(5e9), slip_for(1e8))
+
+    def test_spike_enters_next_bar_and_takes_profit(self):
+        from backtest.scalp import spike_signals, run_spike
+        rows = self._flat(800)
+        rows[400] = (100.0, 106.0, 100.0, 106.0, 1e9)       # 거래대금 10배 + 6% 상승
+        rows[401] = (106.0, 116.0, 106.0, 115.0, 5e8)       # 다음 봉 +8% 이상 추가 상승
+        rows[402:] = [(115.0, 115.0, 115.0, 115.0, 1e8)] * (800 - 402)
+        D = self._data({"KRW-AAA": rows})
+        sig = spike_signals(D, 5, 0.03)
+        self.assertEqual(list(sig), [400])                   # 신호는 급등 봉 마감 시점
+        eq, port = run_spike(D, sig, 0, 800, tp=0.08, sl=0.04, hold=12, slots=1)
+        self.assertEqual(len(port.trades), 1)
+        self.assertGreater(port.trades[0], 0.05)             # 106 진입(+슬리피지) → +8% 익절
+        self.assertEqual(eq[400], eq[0])                     # 신호 봉에서는 아직 미보유
+
+    def test_stop_first_when_bar_hits_both(self):
+        from backtest.scalp import spike_signals, run_spike
+        rows = self._flat(800)
+        rows[400] = (100.0, 106.0, 100.0, 106.0, 1e9)
+        rows[401] = (106.0, 120.0, 90.0, 106.0, 5e8)         # 한 봉에 익절·손절 둘 다 닿음
+        D = self._data({"KRW-AAA": rows})
+        eq, port = run_spike(D, spike_signals(D, 5, 0.03), 0, 800,
+                             tp=0.08, sl=0.04, hold=12, slots=1)
+        self.assertLess(port.trades[0], -0.04)               # 손절로 처리 (보수적)
+
+    def test_illiquid_coin_ignored(self):
+        from backtest.scalp import spike_signals
+        rows = self._flat(800, v=1e5)                         # 24h 거래대금 3억 미만
+        rows[400] = (100.0, 106.0, 100.0, 106.0, 1e7)
+        D = self._data({"KRW-AAA": rows})
+        self.assertEqual(spike_signals(D, 5, 0.03), {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
