@@ -18,7 +18,7 @@ strategy:
   ma_len: 30               # 이동평균 기간 (10~50 전 구간 유효, 30이 최적)
   band: 0.03               # 진입 MA+3% / 이탈 MA-3% 이력대 (휩쏘 비용 절감)
   rebal_days: 7            # 주 1회 판단
-  allocation: equal        # equal = 코인당 총자산/6 (현행) / concentrate = 추세 코인에 몰아주기
+  allocation: momentum     # equal = 코인당 총자산/6 (현행) / concentrate = 추세 코인에 몰아주기
                            # momentum = 추세 코인 중 최근 mom_win일 상승률 상위 top_n개에 집중
   max_weight: 0.5          # concentrate일 때 한 코인 최대 비중
   top_n: 3                 # momentum일 때 보유 코인 수
@@ -34,13 +34,13 @@ risk:
   max_positions: 6         # 6코인 전부 추세일 때 전량 보유 가능
   stop_loss_pct: 0.15      # 재난 방어선 — 추세 이탈(-3% 밴드)이 주 출구, 급락 시 -15% 강제 손절
   daily_loss_limit_pct: 0.08   # 당일 총자산 -8% → 당일 신규 매수 중단
-  kill_switch_pct: 0.40    # 고점 대비 -40% → 전량 매도 + 정지. 전략 역사적 MDD 37%보다 바깥의 재난 브레이크
+  kill_switch_pct: 0.50    # 고점 대비 -50% → 전량 매도 + 정지. 모멘텀 상위3의 역사적 MDD 44%보다 바깥의 재난 브레이크
   crash_guard_pct: 0.10    # 5분 내 ±10% 급변 코인 신규 진입 금지
   min_order_krw: 5500      # 최소 주문 금액 여유분 (실제 한도는 API로 재확인)
   max_daily_buys: 12       # 리밸런싱일 전 코인 교체까지 허용
 
 settle:
-  target_krw: 20000        # 누적 이익이 이 금액에 닿으면 그만큼 현금 분리 후 출금 알림
+  target_krw: 0            # 0 = 이익 분리 없이 전액 재투자 (수익률 시험 기간). 2만원 단위 분리는 20000
                            # 0으로 두면 이익 분리 없이 전액 재투자(자산증식 모드)
 
 fee:
