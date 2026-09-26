@@ -650,5 +650,43 @@ class TestEngineRestart(unittest.TestCase):
         self.assertAlmostEqual(eng2.risk.state.day_start_equity, day_start)
         self.assertIn("KRW-AAA", eng2.positions)
 
+class TestActiveLab(unittest.TestCase):
+    """능동 매매 연구실의 체결 가정이 낙관적이지 않은지 확인한다."""
+
+    def _bars(self, closes, spread=0.0):
+        return [{"ts": f"2026-01-{1 + i // 24:02d}T{i % 24:02d}:00:00", "open": c,
+                 "high": c * (1 + spread), "low": c * (1 - spread), "close": c}
+                for i, c in enumerate(closes)]
+
+    def test_round_trip_costs_fee_only_for_limit(self):
+        from backtest.active import Book, FEE
+        bk = Book(1000.0)
+        bk.buy(100.0, 1000.0, maker=True)
+        bk.sell(100.0, 1.0, maker=True)
+        self.assertAlmostEqual(bk.cash, 1000 * (1 - FEE) ** 2)
+        self.assertAlmostEqual(bk.trades[0], (1 - FEE) ** 2 - 1)
+
+    def test_market_orders_pay_slippage(self):
+        from backtest.active import Book
+        a, b = Book(1000.0), Book(1000.0)
+        a.buy(100.0, 1000.0, maker=True); a.sell(100.0, 1.0, maker=True)
+        b.buy(100.0, 1000.0, maker=False); b.sell(100.0, 1.0, maker=False)
+        self.assertLess(b.cash, a.cash)
+
+    def test_limit_needs_price_to_trade_through(self):
+        # 저가가 지정가에 '닿기만' 하면 체결로 보지 않는다
+        from backtest.active import strat_grid
+        closes = [100.0] * 5 + [98.0] * 5
+        bars = self._bars(closes)
+        eq, bk = strat_grid(bars, [True] * len(bars), 1000.0, g=0.02, slots=4)
+        self.assertEqual(bk.qty, 0.0)
+
+    def test_regime_uses_only_past_days(self):
+        from backtest.active import regime_flags
+        closes = [100.0] * (24 * 32) + [200.0] * 24     # 마지막 날 급등
+        flags = regime_flags(self._bars(closes), ma_len=30)
+        self.assertFalse(flags[-1])                     # 당일 급등은 당일 판정에 안 쓰인다
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

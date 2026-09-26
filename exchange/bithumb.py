@@ -91,6 +91,14 @@ class Bithumb(Exchange):
             params["to"] = to
         return self._request("GET", "/v1/candles/days", params)
 
+    def get_minute_candles(self, market: str, unit: int = 60, count: int = 200,
+                           to: str | None = None) -> list[dict]:
+        """분봉 (unit: 1,3,5,10,15,30,60,240). 최신순."""
+        params = {"market": market, "count": count}
+        if to:
+            params["to"] = to
+        return self._request("GET", f"/v1/candles/minutes/{unit}", params)
+
     # ---------- 개인 API ----------
     def get_balances(self) -> dict[str, dict]:
         data = self._request("GET", "/v1/accounts", auth=True)
