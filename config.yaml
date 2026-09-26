@@ -39,7 +39,7 @@ settle:
                            # 0으로 두면 이익 분리 없이 전액 재투자(자산증식 모드)
 
 fee:
-  coupon_renewed_on: "2026-08-22"   # 빗썸 0.04% 쿠폰 신청일 (30일마다 재신청 후 이 날짜 갱신)
+  coupon_renewed_on: "2026-09-21"   # 빗썸 0.04% 쿠폰 신청일 (30일마다 재신청 후 이 날짜 갱신)
 
 notify:
   telegram: true          # true 설정 + TG_BOT_TOKEN/TG_CHAT_ID 환경변수 필요
