@@ -18,6 +18,8 @@ strategy:
   ma_len: 30               # 이동평균 기간 (10~50 전 구간 유효, 30이 최적)
   band: 0.03               # 진입 MA+3% / 이탈 MA-3% 이력대 (휩쏘 비용 절감)
   rebal_days: 7            # 주 1회 판단
+  allocation: equal        # equal = 코인당 총자산/6 (현행) / concentrate = 추세 코인에 몰아주기
+  max_weight: 0.5          # concentrate일 때 한 코인 최대 비중
   reset_hour_kst: 0        # 거래일 리셋 시각 (KST)
   # --- 이하 volatility_breakout 전용 (name 변경 시에만 사용) ---
   k: 0.5

@@ -3,6 +3,7 @@
 실행: .venv/bin/python -m backtest.lab             # 후보 비교
       .venv/bin/python -m backtest.lab robust      # MA추세 강건성 스윕
       .venv/bin/python -m backtest.lab aggressive  # 공격형 후보 비교 (확장 유니버스 자동 수집)
+      .venv/bin/python -m backtest.lab concentrate # 추세 코인 몰아주기 강건성·비용 민감도
 
 전부 저빈도(월 단위 리밸런싱) 전략이다. 첫 백테스트에서 고빈도 매매가
 비용으로만 -60%를 낸 것이 확인됐으므로, 회전율을 낮추는 것이 1원칙이다.
@@ -257,9 +258,39 @@ def aggressive(base):
             print(f"{label:>10} {r.name:>22} | {yearly(r, dates)}")
 
 
+def concentrate(markets):
+    """'추세 코인에 몰아주기'가 특정 숫자·낮은 비용 가정에만 맞은 건지 확인한다.
+
+    회전율이 현행의 2배라 비용 가정이 중요하다. 실측 체결(수수료 0.04% +
+    평균 슬리피지 0.21%)은 편도 약 0.25% → 왕복 0.5%로, 기본 가정(0.28%)의 2배다.
+    """
+    dates, closes = load_all(markets)
+    px = {m: series(closes, m, dates) for m in markets}
+    R = ROW.replace(">14", ">24")
+    print(f"기간: {dates[0]} ~ {dates[-1]}\n")
+    for cost in (0.0028, 0.005):
+        print(f"== 왕복비용 {cost*100:.2f}% ==")
+        for ma in (20, 30, 50):
+            rows = [(f"MA{ma} 균등(현행)", ma_trend_factory(markets, px, ma, 0.03))]
+            for cap in (0.34, 0.5, 1.0):
+                rows.append((f"MA{ma} 1/k 최대{cap*100:.0f}%",
+                             ranked_trend_factory(markets, px, ma, cap=cap)))
+            for name, fn in rows:
+                r = run(name, dates, closes, fn, cost=cost)
+                print(R.format(name=r.name, r=r) + "  | " + yearly(r, dates))
+            print()
+        for win in (20, 30, 45):
+            fn = ranked_trend_factory(markets, px, 30, top_n=3, mom_win=win)
+            r = run(f"MA30+모멘텀{win}일 상위3", dates, closes, fn, cost=cost)
+            print(R.format(name=r.name, r=r) + "  | " + yearly(r, dates))
+        print()
+
+
 def main():
     with open("config.yaml") as f:
         markets = yaml.safe_load(f)["universe"]
+    if len(sys.argv) > 1 and sys.argv[1] == "concentrate":
+        return concentrate(ensure_data(markets))
     if len(sys.argv) > 1 and sys.argv[1] == "aggressive":
         return aggressive(ensure_data(markets))
     dates, closes = load_all(markets)

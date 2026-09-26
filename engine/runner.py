@@ -164,9 +164,16 @@ class Engine:
         for m in list(self.positions):
             if m not in targets:
                 self.sell(m, prices.get(m), reason="trend_exit")
-        # 2) 새로 추세에 오른 코인 매수 (슬롯 = 총자산/유니버스, 수수료 여유 2%)
+        # 2) 목표 비중 — equal: 총자산/유니버스 (현행)
+        #    concentrate: 추세 코인 수(k)로 나눠 현금 비중을 없앤다 (한 코인 max_weight 상한)
         eq = self.equity(prices)
-        slot = eq / len(universe) * 0.98
+        if scfg.get("allocation", "equal") == "concentrate" and targets:
+            weight = min(1.0 / len(targets), scfg.get("max_weight", 0.5))
+            self.resize_positions(targets, prices, eq * weight * 0.98)
+        else:
+            weight = 1.0 / len(universe)
+        slot = eq * weight * 0.98   # 수수료 여유 2%
+        # 3) 새로 추세에 오른 코인 매수
         for m in targets:
             if m in self.positions or m not in prices:
                 continue
@@ -179,6 +186,33 @@ class Engine:
             else:
                 self.log.event("buy_blocked", market=m, reason=why)
         self.skim_profit(prices)
+
+    def resize_positions(self, targets: list[str], prices: dict[str, float], slot: float,
+                         tolerance: float = 0.15):
+        """보유 중인 추세 코인을 목표 금액(slot)에 맞춘다 — 몰아주기 전용.
+
+        목표와 15% 이상 벌어졌을 때만 조정해 잔잔한 가격 변동으로 매매하지 않는다.
+        줄이기(매도)를 먼저 해서 늘리기(매수)에 쓸 현금을 만든다.
+        """
+        min_order = self.cfg["risk"]["min_order_krw"]
+        held = [m for m in targets if m in self.positions and m in prices]
+        for m in held:
+            value = self.positions[m]["volume"] * prices[m]
+            excess = value - slot
+            if excess > slot * tolerance and excess >= min_order:
+                self.sell_partial(m, prices[m], excess / value, reason="rebalance_trim")
+        for m in held:
+            if m not in self.positions:
+                continue
+            short = slot - self.positions[m]["volume"] * prices[m]
+            if short <= slot * tolerance:
+                continue
+            amount = min(short, self.investable_cash())
+            ok, why = self.risk.can_buy(len(self.positions) - 1, amount, self.investable_cash())
+            if ok:
+                self.buy(m, prices[m], amount, reason="rebalance_add")
+            else:
+                self.log.event("buy_blocked", market=m, reason=why)
 
     def skim_profit(self, prices: dict[str, float]):
         """목표 이익 도달 시 그만큼만 현금화해 출금 대기로 분리한다."""
@@ -253,8 +287,15 @@ class Engine:
             if anomaly:
                 self.log.event("fee_anomaly", market=market, message=anomaly)
                 notify.send(anomaly, self.tg)
-        self.positions[market] = {"volume": volume, "entry_price": price,
-                                  "krw_spent": krw_amount}
+        pos = self.positions.get(market)
+        if pos:   # 추가 매수 (몰아주기 비중 확대) — 평균 단가로 합친다
+            total_vol = pos["volume"] + volume
+            pos["entry_price"] = (pos["entry_price"] * pos["volume"] + price * volume) / total_vol
+            pos["volume"] = total_vol
+            pos["krw_spent"] += krw_amount
+        else:
+            self.positions[market] = {"volume": volume, "entry_price": price,
+                                      "krw_spent": krw_amount}
         self.risk.record_buy()
         self.save_state()
         self.log.trade(market, "buy", krw_amount, volume, price, reason, self.dry_run)

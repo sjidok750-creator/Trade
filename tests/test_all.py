@@ -688,5 +688,91 @@ class TestActiveLab(unittest.TestCase):
         self.assertFalse(flags[-1])                     # 당일 급등은 당일 판정에 안 쓰인다
 
 
+class TestEngineConcentrate(unittest.TestCase):
+    """몰아주기(allocation: concentrate) — 추세 코인 수에 맞춰 비중을 옮긴다."""
+
+    def _engine(self, allocation, max_weight):
+        os.chdir(tempfile.mkdtemp())
+        import yaml
+        cfg = {
+            "mode": {"dry_run": True, "poll_interval_sec": 1},
+            "universe": ["KRW-AAA", "KRW-BBB", "KRW-CCC", "KRW-DDD"],
+            "strategy": {"name": "ma_trend", "ma_len": 5, "band": 0.03,
+                         "rebal_days": 7, "reset_hour_kst": 0, "allocation": allocation,
+                         "max_weight": max_weight,
+                         "k": 0.5, "per_coin_k": {}, "trend_filter_ma": 0},
+            "risk": {**RISK_CFG, "max_positions": 6},
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(cfg, f)
+        from engine.runner import Engine
+
+        class FakeExchange:
+            def __init__(self):
+                self.trend = {m: False for m in cfg["universe"]}
+            def get_tickers(self, markets):
+                return {m: 100.0 for m in markets}
+            def get_daily_candles(self, market, count=10, to=None):
+                yday = 110.0 if self.trend[market] else 90.0
+                return [{"trade_price": p, "opening_price": p,
+                         "high_price": p, "low_price": p}
+                        for p in [999.0, yday] + [100.0] * (count - 2)]
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange()
+        return eng
+
+    def _next_rebal(self, eng):
+        states = eng._load_json("state/trend.json", {})
+        states["_last_rebal"] = "2000-01-01"
+        eng._save_json("state/trend.json", states)
+        eng.trade_day = ""
+        eng.tick()
+
+    def _value(self, eng, m):
+        return eng.positions[m]["volume"] * 100.0
+
+    def test_equal_keeps_cash(self):
+        eng = self._engine("equal", 0.5)
+        eng.ex.trend["KRW-AAA"] = True
+        eng.tick()
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        self.assertAlmostEqual(self._value(eng, "KRW-AAA") / eq, 0.25 * 0.98, places=2)
+
+    def test_concentrate_caps_single_coin(self):
+        eng = self._engine("concentrate", 0.5)
+        eng.ex.trend["KRW-AAA"] = True
+        eng.tick()
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        self.assertAlmostEqual(self._value(eng, "KRW-AAA") / eq, 0.5 * 0.98, places=2)
+
+    def test_concentrate_trims_when_more_coins_trend(self):
+        eng = self._engine("concentrate", 1.0)
+        eng.ex.trend["KRW-AAA"] = True
+        eng.tick()
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        self.assertGreater(self._value(eng, "KRW-AAA") / eq, 0.9)
+        eng.ex.trend["KRW-BBB"] = True          # 추세 코인 2개 → 반씩
+        self._next_rebal(eng)
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        for m in ("KRW-AAA", "KRW-BBB"):
+            self.assertAlmostEqual(self._value(eng, m) / eq, 0.49, delta=0.03)
+
+    def test_concentrate_adds_when_fewer_coins_trend(self):
+        eng = self._engine("concentrate", 1.0)
+        for m in ("KRW-AAA", "KRW-BBB", "KRW-CCC", "KRW-DDD"):
+            eng.ex.trend[m] = True
+        eng.tick()
+        before = eng.positions["KRW-AAA"]["krw_spent"]
+        eng.ex.trend["KRW-CCC"] = eng.ex.trend["KRW-DDD"] = False   # 2개 이탈
+        self._next_rebal(eng)
+        self.assertNotIn("KRW-CCC", eng.positions)
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        self.assertAlmostEqual(self._value(eng, "KRW-AAA") / eq, 0.49, delta=0.03)
+        self.assertGreater(eng.positions["KRW-AAA"]["krw_spent"], before)   # 추가 매수가 합쳐짐
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
