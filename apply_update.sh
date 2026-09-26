@@ -59,5 +59,6 @@ $SYSTEMCTL start autoupdate.timer
 echo ""
 echo "완료: ${OLD_HEAD:0:7} → $(git rev-parse --short HEAD) ($(git log --format=%s -1))"
 echo "--- 바뀐 설정 (백업 대비) ---"
-diff <(grep -vE '^\s*#' "$BACKUP" | sed 's/ *#.*//') <(grep -vE '^\s*#' config.yaml | sed 's/ *#.*//') \
-  | grep -E '^[<>]' || echo "(없음)"
+CHANGES=$(diff <(grep -vE '^\s*#' "$BACKUP" | sed 's/ *#.*//') \
+               <(grep -vE '^\s*#' config.yaml | sed 's/ *#.*//') | grep -E '^[<>]')
+echo "${CHANGES:-(없음)}"
