@@ -185,6 +185,11 @@ tail -20 ~/Trade/logs/events.jsonl  # 거래·판단 기록
 cat ~/Trade/state/trend.json        # 코인별 추세 판단 상태
 cat ~/Trade/state/positions.json    # 현재 보유
 
+# 실전 모드에서 config.yaml이 바뀐 업데이트 반영 (autoupdate가 보류 알림을 보냈을 때)
+# 실패하면 코드·설정을 자동 복구하고 엔진은 건드리지 않는다
+cd ~/Trade && git fetch -q origin claude/auto-trading-plan-vqnxhb && \
+  git show origin/claude/auto-trading-plan-vqnxhb:apply_update.sh | bash
+
 touch ~/Trade/STOP                  # 긴급: 신규 매수 중단 (손절은 계속 동작)
 rm ~/Trade/STOP                     # 해제
 systemctl stop trade                # 엔진 완전 정지
