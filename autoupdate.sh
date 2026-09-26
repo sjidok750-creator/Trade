@@ -22,7 +22,7 @@ REMOTE=$(git rev-parse "origin/$BRANCH")
 # 실전 모드에서 전략·리스크 설정이 바뀌면 자동 적용하지 않는다 (사용자 승인 필요)
 if grep -qE '^[[:space:]]*dry_run:[[:space:]]*false' config.yaml; then
   if git diff --name-only "$LOCAL" "$REMOTE" | grep -qx 'config.yaml'; then
-    notify "⚠️ 실전 모드: config.yaml 변경이 포함된 업데이트가 있어 자동 적용을 보류했습니다. 검토 후 수동 반영하세요."
+    notify "⚠️ 실전 모드: config.yaml 변경이 포함된 업데이트가 있어 자동 적용을 보류했습니다. 검토 후 apply_update.sh로 수동 반영하세요."
     exit 0
   fi
 fi

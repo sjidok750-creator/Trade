@@ -171,10 +171,11 @@ class Engine:
             targets = sorted([m for m in targets if m in mom],
                              key=lambda m: mom[m], reverse=True)[:top_n]
         self.log.event("trend_rebalance", day=self.trade_day, targets=targets)
-        # 1) 추세가 꺾인 보유분 매도
+        # 1) 목표에서 빠진 보유분 매도 — 추세 이탈 / (momentum) 순위 밖으로 밀림
         for m in list(self.positions):
             if m not in targets:
-                self.sell(m, prices.get(m), reason="trend_exit")
+                self.sell(m, prices.get(m),
+                          reason="trend_exit" if not new_states.get(m) else "rank_exit")
         # 2) 목표 비중 — equal: 총자산/유니버스 (현행)
         #    concentrate: 추세 코인 수(k)로 나눠 현금 비중을 없앤다 (한 코인 max_weight 상한)
         #    momentum: 추세 코인 중 수익률 상위 top_n개에 각 1/top_n
