@@ -146,12 +146,18 @@ class Engine:
             if elapsed < scfg.get("rebal_days", 7):
                 return
         universe = self.cfg["universe"]
-        new_states = {}
+        allocation = scfg.get("allocation", "equal")
+        mom_win = scfg.get("mom_win", 30)
+        new_states, mom = {}, {}
         for m in universe:
             try:
-                candles = self.ex.get_daily_candles(m, count=scfg["ma_len"] + 3)
+                candles = self.ex.get_daily_candles(
+                    m, count=max(scfg["ma_len"], mom_win) + 3)
                 new_states[m] = ma_trend.update_state(
                     candles, scfg["ma_len"], scfg["band"], bool(states.get(m, False)))
+                if len(candles) > mom_win + 1:   # 어제 종가 / mom_win일 전 종가
+                    mom[m] = (float(candles[1]["trade_price"])
+                              / float(candles[1 + mom_win]["trade_price"]) - 1)
             except BithumbError as e:
                 self.log.event("error", where="trend", market=m, error=str(e))
                 new_states[m] = bool(states.get(m, False))
@@ -159,6 +165,11 @@ class Engine:
         self._save_json("state/trend.json", new_states)
 
         targets = [m for m in universe if new_states.get(m)]
+        if allocation == "momentum":
+            # 추세 통과 코인 중 mom_win일 수익률 상위 top_n개만 (각 1/top_n, 모자라면 현금)
+            top_n = scfg.get("top_n", 3)
+            targets = sorted([m for m in targets if m in mom],
+                             key=lambda m: mom[m], reverse=True)[:top_n]
         self.log.event("trend_rebalance", day=self.trade_day, targets=targets)
         # 1) 추세가 꺾인 보유분 매도
         for m in list(self.positions):
@@ -166,9 +177,13 @@ class Engine:
                 self.sell(m, prices.get(m), reason="trend_exit")
         # 2) 목표 비중 — equal: 총자산/유니버스 (현행)
         #    concentrate: 추세 코인 수(k)로 나눠 현금 비중을 없앤다 (한 코인 max_weight 상한)
+        #    momentum: 추세 코인 중 수익률 상위 top_n개에 각 1/top_n
         eq = self.equity(prices)
-        if scfg.get("allocation", "equal") == "concentrate" and targets:
+        if allocation == "concentrate" and targets:
             weight = min(1.0 / len(targets), scfg.get("max_weight", 0.5))
+            self.resize_positions(targets, prices, eq * weight * 0.98)
+        elif allocation == "momentum":
+            weight = 1.0 / scfg.get("top_n", 3)
             self.resize_positions(targets, prices, eq * weight * 0.98)
         else:
             weight = 1.0 / len(universe)

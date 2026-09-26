@@ -688,8 +688,8 @@ class TestActiveLab(unittest.TestCase):
         self.assertFalse(flags[-1])                     # 당일 급등은 당일 판정에 안 쓰인다
 
 
-class TestEngineConcentrate(unittest.TestCase):
-    """몰아주기(allocation: concentrate) — 추세 코인 수에 맞춰 비중을 옮긴다."""
+class _AllocationBase(unittest.TestCase):
+    """비중 방식 테스트 공용 — 4코인 가짜 거래소 엔진."""
 
     def _engine(self, allocation, max_weight):
         os.chdir(tempfile.mkdtemp())
@@ -733,6 +733,10 @@ class TestEngineConcentrate(unittest.TestCase):
 
     def _value(self, eng, m):
         return eng.positions[m]["volume"] * 100.0
+
+
+class TestEngineConcentrate(_AllocationBase):
+    """몰아주기(allocation: concentrate) — 추세 코인 수에 맞춰 비중을 옮긴다."""
 
     def test_equal_keeps_cash(self):
         eng = self._engine("equal", 0.5)
@@ -829,6 +833,45 @@ class TestScalpLab(unittest.TestCase):
         rows[400] = (100.0, 106.0, 100.0, 106.0, 1e7)
         D = self._data({"KRW-AAA": rows})
         self.assertEqual(spike_signals(D, 5, 0.03), {})
+
+
+class TestEngineMomentum(_AllocationBase):
+    """momentum — 추세 코인 중 최근 상승률 상위 top_n개만 보유."""
+
+    def _mom_engine(self, rets):
+        eng = self._engine("momentum", 0.5)
+        eng.cfg["strategy"].update(top_n=2, mom_win=5)
+        ex = eng.ex
+
+        def candles(market, count=10, to=None, ex=ex):
+            yday = 110.0 if ex.trend[market] else 90.0
+            old = yday / (1 + rets[market])            # mom_win일 전 종가
+            rows = [999.0, yday] + [100.0] * (count - 2)
+            rows[1 + 5] = old
+            return [{"trade_price": p, "opening_price": p,
+                     "high_price": p, "low_price": p} for p in rows]
+        ex.get_daily_candles = candles
+        return eng
+
+    def test_holds_top_n_trending_by_return(self):
+        rets = {"KRW-AAA": 0.10, "KRW-BBB": 0.30, "KRW-CCC": 0.20, "KRW-DDD": 0.50}
+        eng = self._mom_engine(rets)
+        for m in ("KRW-AAA", "KRW-BBB", "KRW-CCC"):
+            eng.ex.trend[m] = True                      # DDD는 수익률 1위지만 추세 아님
+        eng.tick()
+        self.assertEqual(set(eng.positions), {"KRW-BBB", "KRW-CCC"})
+        eq = eng.equity({m: 100.0 for m in eng.cfg["universe"]})
+        self.assertAlmostEqual(self._value(eng, "KRW-BBB") / eq, 0.49, delta=0.02)
+
+    def test_rotates_out_when_rank_drops(self):
+        rets = {"KRW-AAA": 0.10, "KRW-BBB": 0.30, "KRW-CCC": 0.20, "KRW-DDD": 0.05}
+        eng = self._mom_engine(rets)
+        for m in ("KRW-AAA", "KRW-BBB", "KRW-CCC"):
+            eng.ex.trend[m] = True
+        eng.tick()
+        rets["KRW-AAA"] = 0.40                          # AAA가 1위로 올라옴 → CCC 교체
+        self._next_rebal(eng)
+        self.assertEqual(set(eng.positions), {"KRW-AAA", "KRW-BBB"})
 
 
 if __name__ == "__main__":
