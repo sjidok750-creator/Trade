@@ -318,7 +318,7 @@ class Engine:
         notify.send(f"[매수] {market} {krw_amount:,.0f}원 @ {price:,.0f} ({reason})", self.tg)
 
     def sell(self, market: str, price: float | None, reason: str):
-        pos = self.positions.pop(market, None)
+        pos = self.positions.get(market)
         if not pos:
             return
         price = price or pos["entry_price"]
@@ -327,7 +327,10 @@ class Engine:
         if self.dry_run:
             self.paper["krw"] += krw_got
         else:
+            # 주문이 거부되면 예외가 올라간다. 포지션은 주문 성공 뒤에만 지운다 —
+            # 먼저 지우면 코인은 계좌에 남았는데 엔진 장부와 자산 계산에서 빠진다.
             self.ex.sell_market(market, volume)
+        del self.positions[market]
         self.save_state()
         pnl = krw_got - pos["krw_spent"]
         self.log.trade(market, "sell", krw_got, pos["volume"], price,
@@ -355,8 +358,17 @@ class Engine:
         self.log.trade(market, "sell", krw_got, volume, price, reason, self.dry_run)
 
     def liquidate_all(self, prices: dict[str, float], reason: str):
+        """전량 매도. 한 코인이 거부돼도 나머지는 판다 — 실패분은 장부에 남아
+        예외로 알리고, 다음 틱에 다시 시도된다 (엔진이 보유를 남긴 채 멈추지 않게)."""
+        failed = []
         for market in list(self.positions):
-            self.sell(market, prices.get(market), reason=reason)
+            try:
+                self.sell(market, prices.get(market), reason=reason)
+            except BithumbError as e:
+                failed.append(market)
+                self.log.event("error", where="liquidate", market=market, error=str(e))
+        if failed:
+            raise BithumbError(f"전량 매도 중 실패: {', '.join(failed)}")
 
     def maybe_report(self, equity: float, prices: dict[str, float]):
         """한국시간 지정 시각마다 현황 리포트를 텔레그램으로 보낸다."""

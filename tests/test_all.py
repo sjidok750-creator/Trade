@@ -185,6 +185,7 @@ class TestReport(unittest.TestCase):
         self.assertIn("+5.00%", msg)      # 총자산 손익률
         self.assertIn("ETH", msg)
         self.assertIn("+20.0%", msg)      # 개별 포지션 손익률
+        self.assertIn("· 120원", msg)     # 현재가
         self.assertIn("BTC", msg)         # 추세 아래 대기 목록
 
     def test_build_no_positions(self):
@@ -535,6 +536,69 @@ class TestEnginePaper(unittest.TestCase):
                             and "stop_loss" in e["reason"] for e in events))
 
 
+
+
+class TestEngineSellFailure(unittest.TestCase):
+    """실전 매도 주문이 거부돼도 포지션이 장부에서 사라지면 안 된다."""
+
+    def test_rejected_sell_keeps_position(self):
+        os.chdir(tempfile.mkdtemp())
+        from engine.runner import Engine
+        from exchange.bithumb import BithumbError
+        cfg = {
+            "mode": {"dry_run": False, "poll_interval_sec": 1},
+            "universe": ["KRW-TST"],
+            "strategy": {"name": "ma_trend", "reset_hour_kst": 0},
+            "risk": RISK_CFG,
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+
+        class FakeExchange:
+            def get_balances(self):
+                return {"TST": {"balance": 10.0}}
+            def sell_market(self, market, volume):
+                raise BithumbError("/v1/orders HTTP 400")
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange()
+        eng.positions = {"KRW-TST": {"volume": 10.0, "entry_price": 100.0, "krw_spent": 1000.0}}
+        with self.assertRaises(BithumbError):
+            eng.sell("KRW-TST", 90.0, reason="trend_exit")
+        self.assertIn("KRW-TST", eng.positions)              # 계좌에 남은 코인은 장부에도 남는다
+        self.assertAlmostEqual(eng.total_equity({"KRW-TST": 90.0}) - eng.krw_balance(), 900.0)
+
+    def test_liquidate_sells_rest_when_one_rejected(self):
+        os.chdir(tempfile.mkdtemp())
+        from engine.runner import Engine
+        from exchange.bithumb import BithumbError
+        cfg = {
+            "mode": {"dry_run": False, "poll_interval_sec": 1},
+            "universe": ["KRW-AAA", "KRW-BBB"],
+            "strategy": {"name": "ma_trend", "reset_hour_kst": 0},
+            "risk": RISK_CFG,
+            "fee": {"coupon_renewed_on": None},
+            "notify": {"telegram": False},
+        }
+
+        class FakeExchange:
+            def __init__(self):
+                self.sold = []
+            def get_balances(self):
+                return {"AAA": {"balance": 10.0}, "BBB": {"balance": 10.0}}
+            def sell_market(self, market, volume):
+                if market == "KRW-AAA":
+                    raise BithumbError("/v1/orders HTTP 400")
+                self.sold.append(market)
+
+        eng = Engine(cfg)
+        eng.ex = FakeExchange()
+        eng.positions = {m: {"volume": 10.0, "entry_price": 100.0, "krw_spent": 1000.0}
+                         for m in cfg["universe"]}
+        with self.assertRaises(BithumbError):              # 실패가 있으면 엔진이 멈추지 않게 알린다
+            eng.liquidate_all({"KRW-AAA": 90.0, "KRW-BBB": 90.0}, "kill_switch")
+        self.assertEqual(eng.ex.sold, ["KRW-BBB"])          # 거부된 코인 때문에 나머지를 못 팔면 안 된다
+        self.assertEqual(set(eng.positions), {"KRW-AAA"})   # 실패분은 다음 틱 재시도 대상
 
 
 class TestWeekly(unittest.TestCase):

@@ -48,7 +48,9 @@ def build(mode: str, equity: float, start_capital: float, krw: float,
             p = value - pos["krw_spent"]
             r = p / pos["krw_spent"] * 100 if pos["krw_spent"] else 0.0
             coin = market.replace("KRW-", "")
-            lines.append(f"  {coin} {value:,.0f}원 ({r:+.1f}%)")
+            # 현재가를 함께 보여준다 — 저가 코인은 호가 단위(1원)가 커서 가격이
+            # 한 칸 움직이기 전까지 평가액이 몇 시간씩 그대로일 수 있다
+            lines.append(f"  {coin} {value:,.0f}원 ({r:+.1f}%) · {price:,.0f}원")
     else:
         lines.append("")
         lines.append("보유 없음 (전액 현금)")
